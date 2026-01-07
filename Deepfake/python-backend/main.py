@@ -68,6 +68,10 @@ async def analyze_video(file: UploadFile = File(...)):
         logger.info(f"📊 File size: {file_size_mb:.2f}MB")
         
         # TODO: Add your deepfake detection model here
+        # Example:
+        #   result = model.predict(str(file_path))
+        #   analysis_result["analysis"]["is_deepfake"] = result.is_deepfake
+        #   analysis_result["analysis"]["confidence"] = result.confidence
         analysis_result = {
             "status": "success",
             "message": "Video received and ready for analysis",
@@ -104,4 +108,5 @@ async def analyze_video(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     import uvicorn
+    # Run with: python main.py
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

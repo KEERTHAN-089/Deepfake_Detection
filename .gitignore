@@ -34,3 +34,5 @@ Thumbs.db
 # Large generated data
 Deepfake\node-downloader\videos/
 Deepfake\python-backend\temp/
+videos/
+temp/

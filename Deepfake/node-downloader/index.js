@@ -240,6 +240,12 @@ app.use((err, req, res, next) => {
   });
 });
 
+// This service:
+// 1) Accepts a video URL from the frontend (/download)
+// 2) Uses yt-dlp to download it into videos/
+// 3) Streams the file to the Python FastAPI backend (/analyze)
+// 4) Returns the analysis JSON back to the frontend
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Video Downloader Service running on port ${PORT}`);
