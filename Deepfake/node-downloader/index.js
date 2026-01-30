@@ -29,6 +29,23 @@ if (!fs.existsSync(VIDEOS_DIR)) {
   console.log('✅ Created videos directory');
 }
 
+// Clean up any leftover .ytdl files on startup
+const cleanupPartialDownloads = () => {
+  try {
+    const files = fs.readdirSync(VIDEOS_DIR);
+    const ytdlFiles = files.filter(f => f.endsWith('.ytdl'));
+    ytdlFiles.forEach(file => {
+      const filePath = path.join(VIDEOS_DIR, file);
+      fs.unlinkSync(filePath);
+      console.log(`🧹 Cleaned up partial download: ${file}`);
+    });
+  } catch (error) {
+    console.warn('⚠️ Could not clean up partial downloads:', error.message);
+  }
+};
+
+cleanupPartialDownloads();
+
 /**
  * Health check endpoint
  */

@@ -52,3 +52,52 @@ npm install
 npm run dev
 # app runs at http://localhost:5174
 ```
+
+## Troubleshooting
+
+### SSL Certificate Error (CERTIFICATE_VERIFY_FAILED)
+
+If you encounter SSL certificate verification errors:
+
+**Cause:** Corporate proxy, antivirus software (Avast, AVG, Kaspersky), or firewall intercepting HTTPS traffic.
+
+**Solutions:**
+
+```bash
+# Option 1: Update yt-dlp and Python certifi
+pip install -U yt-dlp certifi
+
+# Option 2: Temporarily disable antivirus SSL scanning
+# Check your antivirus settings for "HTTPS scanning" or "SSL scanning"
+
+# Option 3: Use system certificates (Windows)
+pip install python-certifi-win32
+
+# Option 4: Update Python's CA certificates
+python -m pip install --upgrade certifi
+```
+
+**The app already uses `--no-check-certificate` as a workaround**, but for security, it's better to fix the root cause.
+
+### YouTube download issues (HTTP 403 / Empty file)
+
+If you encounter YouTube download errors:
+
+```bash
+# 1. Update yt-dlp to latest version
+pip install -U yt-dlp
+
+# 2. (Optional) Install JavaScript runtime for better YouTube support
+# Windows (via Chocolatey):
+choco install nodejs
+
+# Or download from: https://nodejs.org/
+
+# 3. Alternative: Use cookies for age-restricted/member-only videos
+# Export cookies from browser and use: --cookies cookies.txt
+```
+
+**Note:** Some YouTube videos (especially Shorts) may have stricter protections. Try:
+- Regular YouTube videos instead of Shorts
+- Public, non-restricted videos
+- Alternative video platforms (direct MP4 links work best)
