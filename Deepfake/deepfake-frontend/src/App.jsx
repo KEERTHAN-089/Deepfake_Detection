@@ -14,6 +14,7 @@ import Profile from "./pages/profile";
 import History from "./pages/history";
 import NotFound from "./pages/notfound";
 import Videos from "./pages/videos";
+import Result from "./pages/result";
 
 function App() {
   return (
@@ -27,6 +28,10 @@ function App() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/verify-email" element={<EmailVerification />} />
+          
+          {/* Result Route */}
+          <Route path="/result" element={<Result />} />
+          <Route path="/result/:id" element={<Result />} />
           
           {/* Protected Routes */}
           <Route

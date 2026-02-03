@@ -5,7 +5,9 @@ import { useAuth } from "../contexts/AuthContext";
 export default function History() {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
-  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [analyses, setAnalyses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   const handleLogout = async () => {
     try {
@@ -16,36 +18,61 @@ export default function History() {
     }
   };
 
-  const [analyses] = useState([
-    {
-      id: 1,
-      filename: "video_sample_1.mp4",
-      uploadDate: "2025-01-15",
-      result: "Likely Deepfake",
-      confidence: 94,
-      status: "completed",
-    },
-    {
-      id: 2,
-      filename: "interview_footage.mp4",
-      uploadDate: "2025-01-14",
-      result: "Authentic",
-      confidence: 98,
-      status: "completed",
-    },
-    {
-      id: 3,
-      filename: "presentation_video.mov",
-      uploadDate: "2025-01-13",
-      result: "Likely Deepfake",
-      confidence: 87,
-      status: "completed",
-    },
-  ]);
-
   useEffect(() => {
     if (!currentUser) navigate("/login");
   }, [currentUser, navigate]);
+
+  useEffect(() => {
+    // Fetch analysis history from backend
+    const fetchHistory = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch("http://localhost:8000/results");
+        const data = await response.json();
+        
+        // Transform backend data to frontend format
+        const transformedData = data.results.map((result) => {
+          const date = new Date(result.timestamp);
+          // Use the score for the predicted class
+          const actualConfidence = result.prediction === "FAKE" 
+            ? result.fake_probability || result.confidence || 0
+            : result.real_probability || result.confidence || 0;
+          
+          return {
+            id: result.result_id || result.id, // Use result_id first, fallback to id
+            filename: result.filename,
+            uploadDate: date.toLocaleDateString(),
+            uploadTime: date.toLocaleTimeString(),
+            fullTimestamp: date.getTime(), // For sorting
+            result: result.prediction === "FAKE" ? "Likely Deepfake" : "Authentic",
+            confidence: Math.round(actualConfidence),
+            status: "completed",
+            realScore: result.real_probability,
+            fakeScore: result.fake_probability,
+          };
+        });
+        
+        // Remove duplicates - keep only the latest upload of each filename
+        const uniqueVideos = {};
+        transformedData.forEach(analysis => {
+          if (!uniqueVideos[analysis.filename] || 
+              analysis.fullTimestamp > uniqueVideos[analysis.filename].fullTimestamp) {
+            uniqueVideos[analysis.filename] = analysis;
+          }
+        });
+        
+        setAnalyses(Object.values(uniqueVideos));
+        setError(null);
+      } catch (err) {
+        console.error("Failed to fetch history:", err);
+        setError("Failed to load analysis history");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchHistory();
+  }, []);
 
   const viewVideo = (filename) => {
     // Navigate to videos page or show video player
@@ -155,76 +182,132 @@ export default function History() {
           </p>
         </div>
 
-        {/* Stats Cards */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
-            gap: "20px",
-            marginBottom: "30px",
-          }}
-        >
-          {[
-            {
-              label: "Total Analyses",
-              value: analyses.length,
-              icon: "📊",
-            },
-            {
-              label: "Authentic",
-              value: analyses.filter((a) => a.result === "Authentic").length,
-              icon: "✓",
-            },
-            {
-              label: "Deepfakes Detected",
-              value: analyses.filter((a) => a.result !== "Authentic").length,
-              icon: "⚠",
-            },
-          ].map((stat, idx) => (
-            <div
-              key={idx}
-              style={{
-                backgroundColor: "#16213e",
-                borderRadius: "8px",
-                border: "1px solid #9333ea",
-                padding: "20px",
-              }}
-            >
-              <div style={{ fontSize: "28px", marginBottom: "10px" }}>
-                {stat.icon}
-              </div>
-              <p
-                style={{
-                  fontSize: "12px",
-                  color: "#9ca3af",
-                  marginBottom: "5px",
-                }}
-              >
-                {stat.label}
-              </p>
-              <p
-                style={{
-                  fontSize: "24px",
-                  fontWeight: "bold",
-                  color: "#fff",
-                }}
-              >
-                {stat.value}
-              </p>
-            </div>
-          ))}
-        </div>
+        {/* Loading State */}
+        {loading && (
+          <div style={{ textAlign: "center", padding: "50px", color: "#a78bfa" }}>
+            <div style={{ fontSize: "24px", marginBottom: "10px" }}>⏳</div>
+            <p>Loading analysis history...</p>
+          </div>
+        )}
 
-        {/* History Table */}
-        <div
-          style={{
+        {/* Error State */}
+        {error && (
+          <div style={{
+            padding: "20px",
+            backgroundColor: "#7f1d1d",
+            borderRadius: "8px",
+            border: "1px solid #dc2626",
+            color: "#fecaca",
+            marginBottom: "20px"
+          }}>
+            ❌ {error}
+          </div>
+        )}
+
+        {/* Empty State */}
+        {!loading && !error && analyses.length === 0 && (
+          <div style={{
+            textAlign: "center",
+            padding: "50px",
             backgroundColor: "#16213e",
             borderRadius: "8px",
             border: "1px solid #9333ea",
-            overflow: "hidden",
-          }}
-        >
-          <div style={{ overflowX: "auto" }}>
+          }}>
+            <div style={{ fontSize: "48px", marginBottom: "20px" }}>📊</div>
+            <h3 style={{ color: "#a78bfa", marginBottom: "10px" }}>No Analysis History Yet</h3>
+            <p style={{ color: "#d1d5db", marginBottom: "20px" }}>
+              Upload your first video to get started
+            </p>
+            <Link
+              to="/"
+              style={{
+                padding: "10px 20px",
+                backgroundColor: "#7c3aed",
+                color: "#fff",
+                textDecoration: "none",
+                borderRadius: "4px",
+                display: "inline-block",
+                fontWeight: "bold",
+              }}
+            >
+              Upload Video
+            </Link>
+          </div>
+        )}
+
+        {/* Stats Cards */}
+        {!loading && !error && analyses.length > 0 && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+              gap: "20px",
+              marginBottom: "30px",
+            }}
+          >
+            {[
+              {
+                label: "Total Analyses",
+                value: analyses.length,
+                icon: "📊",
+              },
+              {
+                label: "Authentic",
+                value: analyses.filter((a) => a.result === "Authentic").length,
+                icon: "✓",
+              },
+              {
+                label: "Deepfakes Detected",
+                value: analyses.filter((a) => a.result !== "Authentic").length,
+                icon: "⚠",
+              },
+            ].map((stat, idx) => (
+              <div
+                key={idx}
+                style={{
+                  backgroundColor: "#16213e",
+                  borderRadius: "8px",
+                  border: "1px solid #9333ea",
+                  padding: "20px",
+                }}
+              >
+                <div style={{ fontSize: "28px", marginBottom: "10px" }}>
+                  {stat.icon}
+                </div>
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "#9ca3af",
+                    marginBottom: "5px",
+                  }}
+                >
+                  {stat.label}
+                </p>
+                <p
+                  style={{
+                    fontSize: "24px",
+                    fontWeight: "bold",
+                    color: "#fff",
+                  }}
+                >
+                  {stat.value}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* History Table */}
+        {!loading && !error && analyses.length > 0 && (
+          <div
+            style={{
+              backgroundColor: "#16213e",
+              borderRadius: "8px",
+              border: "1px solid #9333ea",
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ overflowX: "auto" }}>
             <table
               style={{
                 width: "100%",
@@ -238,7 +321,7 @@ export default function History() {
                     borderBottom: "1px solid #9333ea",
                   }}
                 >
-                  {["Filename", "Upload Date", "Result", "Confidence", "Status"].map(
+                  {["Filename", "Date & Time", "Result", "Confidence", "Status"].map(
                     (header) => (
                       <th
                         key={header}
@@ -283,7 +366,10 @@ export default function History() {
                         borderRight: "1px solid #4c1d95",
                       }}
                     >
-                      {analysis.uploadDate}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '13px', color: '#d1d5db' }}>{analysis.uploadDate}</span>
+                        <span style={{ fontSize: '11px', color: '#6b7280' }}>{analysis.uploadTime}</span>
+                      </div>
                     </td>
 
                     {/* Result */}
@@ -337,6 +423,7 @@ export default function History() {
                             height: "6px",
                             backgroundColor: "#4c1d95",
                             borderRadius: "3px",
+                            overflow: "hidden",
                           }}
                         >
                           <div
@@ -370,7 +457,7 @@ export default function History() {
                           ✓ Completed
                         </span>
                         <Link
-                          to={`/videos`}
+                          to={`/result/${analysis.id}`}
                           style={{
                             fontSize: '12px',
                             color: '#a78bfa',
@@ -378,7 +465,7 @@ export default function History() {
                             fontWeight: 'bold'
                           }}
                         >
-                          📹 View Video
+                          📋 View Details
                         </Link>
                       </div>
                     </td>
@@ -388,51 +475,54 @@ export default function History() {
             </table>
           </div>
         </div>
+        )}
 
         {/* CTA Section */}
-        <div
-          style={{
-            marginTop: "40px",
-            padding: "25px",
-            backgroundColor: "#16213e",
-            borderRadius: "8px",
-            border: "1px solid #9333ea",
-            textAlign: "center",
-          }}
-        >
-          <h3
+        {!loading && !error && analyses.length > 0 && (
+          <div
             style={{
-              fontSize: "20px",
-              fontWeight: "bold",
-              color: "#a78bfa",
-              marginBottom: "10px",
+              marginTop: "40px",
+              padding: "25px",
+              backgroundColor: "#16213e",
+              borderRadius: "8px",
+              border: "1px solid #9333ea",
+              textAlign: "center",
             }}
           >
-            Ready to Analyze More Videos?
-          </h3>
-          <p
-            style={{
-              color: "#d1d5db",
-              marginBottom: "15px",
-            }}
-          >
-            Upload new videos to check whether they're authentic or deepfakes.
-          </p>
-          <Link
-            to="/"
-            style={{
-              padding: "10px 20px",
-              backgroundColor: "#7c3aed",
-              color: "#fff",
-              textDecoration: "none",
-              borderRadius: "4px",
-              display: "inline-block",
-              fontWeight: "bold",
-            }}
-          >
-            Upload New Video
-          </Link>
-        </div>
+            <h3
+              style={{
+                fontSize: "20px",
+                fontWeight: "bold",
+                color: "#a78bfa",
+                marginBottom: "10px",
+              }}
+            >
+              Ready to Analyze More Videos?
+            </h3>
+            <p
+              style={{
+                color: "#d1d5db",
+                marginBottom: "15px",
+              }}
+            >
+              Upload new videos to check whether they're authentic or deepfakes.
+            </p>
+            <Link
+              to="/"
+              style={{
+                padding: "10px 20px",
+                backgroundColor: "#7c3aed",
+                color: "#fff",
+                textDecoration: "none",
+                borderRadius: "4px",
+                display: "inline-block",
+                fontWeight: "bold",
+              }}
+            >
+              Upload New Video
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );
