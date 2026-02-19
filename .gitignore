@@ -20,6 +20,17 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# Firebase service account (PRIVATE KEY - NEVER COMMIT)
+firebase_service_account.json
+*-firebase-adminsdk-*.json
+
+# Downloaded / temp videos
+**/videos/*.mp4
+**/videos/*.mkv
+**/videos/*.avi
+**/videos/*.webm
+**/videos/*.mov
+
 # Model files (too large for GitHub)
 *.pth
 *.pkl

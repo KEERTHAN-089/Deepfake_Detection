@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { auth } from "../firebase";
 
 export default function History() {
   const { currentUser, logout } = useAuth();
@@ -23,44 +24,57 @@ export default function History() {
   }, [currentUser, navigate]);
 
   useEffect(() => {
-    // Fetch analysis history from backend
+    // Fetch analysis history from Firestore via backend
     const fetchHistory = async () => {
       try {
         setLoading(true);
-        const response = await fetch("http://localhost:8000/results");
+
+        // Build request – send Firebase ID token so backend returns this user's docs
+        const headers = {};
+        if (auth.currentUser) {
+          const token = await auth.currentUser.getIdToken();
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+
+        const response = await fetch("http://localhost:8000/history", { headers });
         const data = await response.json();
-        
+
         // Transform backend data to frontend format
-        const transformedData = data.results.map((result) => {
-          const date = new Date(result.timestamp);
-          // Use the score for the predicted class
-          const actualConfidence = result.prediction === "FAKE" 
-            ? result.fake_probability || result.confidence || 0
-            : result.real_probability || result.confidence || 0;
-          
+        // Firestore docs wrap the result inside a "data" field
+        const transformedData = (data.results || []).map((doc) => {
+          const result = doc.data || doc; // unwrap Firestore wrapper
+          const date = new Date(result.timestamp || doc.created_at);
+          const actualConfidence =
+            result.prediction === "FAKE"
+              ? result.fake_probability || result.confidence || 0
+              : result.real_probability || result.confidence || 0;
+
           return {
-            id: result.result_id || result.id, // Use result_id first, fallback to id
+            id: result.id || doc.doc_id,
             filename: result.filename,
             uploadDate: date.toLocaleDateString(),
             uploadTime: date.toLocaleTimeString(),
-            fullTimestamp: date.getTime(), // For sorting
+            fullTimestamp: date.getTime(),
             result: result.prediction === "FAKE" ? "Likely Deepfake" : "Authentic",
             confidence: Math.round(actualConfidence),
             status: "completed",
             realScore: result.real_probability,
             fakeScore: result.fake_probability,
+            _raw: result, // keep full result for View Details navigation
           };
         });
-        
-        // Remove duplicates - keep only the latest upload of each filename
+
+        // Remove duplicates – keep only the latest upload of each filename
         const uniqueVideos = {};
-        transformedData.forEach(analysis => {
-          if (!uniqueVideos[analysis.filename] || 
-              analysis.fullTimestamp > uniqueVideos[analysis.filename].fullTimestamp) {
+        transformedData.forEach((analysis) => {
+          if (
+            !uniqueVideos[analysis.filename] ||
+            analysis.fullTimestamp > uniqueVideos[analysis.filename].fullTimestamp
+          ) {
             uniqueVideos[analysis.filename] = analysis;
           }
         });
-        
+
         setAnalyses(Object.values(uniqueVideos));
         setError(null);
       } catch (err) {
@@ -72,7 +86,7 @@ export default function History() {
     };
 
     fetchHistory();
-  }, []);
+  }, [currentUser]);
 
   const viewVideo = (filename) => {
     // Navigate to videos page or show video player
@@ -458,6 +472,7 @@ export default function History() {
                         </span>
                         <Link
                           to={`/result/${analysis.id}`}
+                          state={{ result: analysis._raw }}
                           style={{
                             fontSize: '12px',
                             color: '#a78bfa',

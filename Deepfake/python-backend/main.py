@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import torch
@@ -38,6 +38,31 @@ TEMP_DIR.mkdir(exist_ok=True)
 logger.info(f"✅ Created temp directory: {TEMP_DIR.absolute()}")
 
 analysis_results = {}
+
+# --- Firebase Admin / Firestore initialization (optional) ---
+firestore_client = None
+try:
+    import firebase_admin
+    from firebase_admin import credentials, auth as firebase_auth, firestore as firebase_firestore
+
+    # Prefer a service account path from env var, otherwise look for local file
+    sa_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+    if sa_path and Path(sa_path).exists():
+        cred = credentials.Certificate(sa_path)
+    else:
+        local_sa = Path(__file__).parent / "firebase_service_account.json"
+        if local_sa.exists():
+            cred = credentials.Certificate(str(local_sa))
+        else:
+            # Try application default
+            cred = credentials.ApplicationDefault()
+
+    firebase_admin.initialize_app(cred)
+    firestore_client = firebase_firestore.client()
+    logger.info("✅ Firebase Admin initialized; Firestore client available")
+except Exception as e:
+    logger.warning(f"⚠️ Firebase Admin not initialized: {e}")
+    firestore_client = None
 
 # ==================== XCEPTION + LSTM MODEL ====================
 
@@ -102,7 +127,8 @@ class XceptionLSTM(nn.Module):
 
 # ==================== LOAD MODEL ====================
 
-MODEL_DIR = Path(__file__).parent.parent.parent.parent / "xception_lstm_20260129_074841"
+MODEL_DIR = Path(__file__).parent.parent / "xception_lstm_20260129_074841"
+
 MODEL_PATH = MODEL_DIR / "best_model.pth"
 RESULTS_PATH = MODEL_DIR / "results.json"
 
@@ -415,14 +441,27 @@ async def get_result(result_id: str):
     logger.info(f"📊 Available result IDs: {list(analysis_results.keys())}")
     
     if result_id in analysis_results:
-        logger.info(f"✅ Result found for ID: {result_id}")
+        logger.info(f"✅ Result found in memory for ID: {result_id}")
         return JSONResponse(content=analysis_results[result_id])
-    else:
-        logger.error(f"❌ Result not found for ID: {result_id}")
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Result not found for ID: {result_id}. Available IDs: {list(analysis_results.keys())}"
-        )
+
+    # Fallback: search Firestore
+    if firestore_client:
+        try:
+            logger.info(f"🔎 Searching Firestore for result ID: {result_id}")
+            docs = firestore_client.collection("histories").where("data.id", "==", result_id).limit(1).stream()
+            for d in docs:
+                doc_data = d.to_dict()
+                result_data = doc_data.get("data", doc_data)
+                logger.info(f"✅ Result found in Firestore for ID: {result_id}")
+                return JSONResponse(content=result_data)
+        except Exception as e:
+            logger.warning(f"⚠️ Firestore lookup failed: {e}")
+
+    logger.error(f"❌ Result not found for ID: {result_id}")
+    raise HTTPException(
+        status_code=404,
+        detail=f"Result not found for ID: {result_id}"
+    )
 
 @app.get("/results")
 async def list_results():
@@ -438,6 +477,95 @@ async def list_results():
         "count": len(results_list),
         "results": results_list
     })
+
+
+@app.post("/history")
+async def save_history(request: Request, authorization: str = Header(None)):
+    """Save analysis result to Firestore (requires Firebase ID token) or fall back to in-memory storage."""
+    payload = await request.json()
+
+    # If Firestore is configured, require and verify ID token
+    if firestore_client:
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+        try:
+            token = authorization.split(" ", 1)[1] if authorization.lower().startswith("bearer ") else authorization
+            decoded = firebase_auth.verify_id_token(token)
+            uid = decoded.get("uid")
+        except Exception as e:
+            logger.warning(f"⚠️ Token verification failed: {e}")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+        # Prepare document
+        doc = {
+            "user_id": uid,
+            "data": payload,
+            "created_at": datetime.now().isoformat()
+        }
+
+        try:
+            doc_ref = firestore_client.collection("histories").add(doc)
+            # doc_ref returns (write_result, ref)
+            doc_id = None
+            try:
+                doc_id = doc_ref[1].id
+            except Exception:
+                doc_id = None
+
+            return JSONResponse(content={"saved": True, "doc_id": doc_id})
+        except Exception as e:
+            logger.error(f"❌ Failed to save history to Firestore: {e}")
+            raise HTTPException(status_code=500, detail="Failed to save history")
+
+    # Fallback: store in-memory if an `id` is provided in payload
+    if payload and isinstance(payload, dict) and payload.get("id"):
+        analysis_results[payload["id"]] = payload
+        return JSONResponse(content={"saved": True, "storage": "memory", "id": payload.get("id")})
+
+    raise HTTPException(status_code=501, detail="Firestore not configured and no id provided for in-memory storage")
+
+
+@app.get("/history")
+async def get_history(authorization: str = Header(None)):
+    """Fetch user's history from Firestore (requires Firebase ID token)."""
+    if not firestore_client:
+        # Fallback: return all in-memory results
+        results_list = []
+        for result_id, result_data in analysis_results.items():
+            rr = result_data.copy()
+            rr["result_id"] = result_id
+            results_list.append(rr)
+        return JSONResponse(content={"count": len(results_list), "results": results_list})
+
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    try:
+        token = authorization.split(" ", 1)[1] if authorization.lower().startswith("bearer ") else authorization
+        decoded = firebase_auth.verify_id_token(token)
+        uid = decoded.get("uid")
+    except Exception as e:
+        logger.warning(f"⚠️ Token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    try:
+        # Simple query without order_by to avoid requiring a composite index
+        q = firestore_client.collection("histories").where("user_id", "==", uid).limit(200)
+        docs = q.stream()
+        items = []
+        for d in docs:
+            data = d.to_dict()
+            data["doc_id"] = d.id
+            items.append(data)
+
+        # Sort in Python by created_at descending
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+        return JSONResponse(content={"count": len(items), "results": items})
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch history from Firestore: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch history")
 
 
 if __name__ == "__main__":

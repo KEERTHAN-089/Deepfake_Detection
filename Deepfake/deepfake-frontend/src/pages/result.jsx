@@ -5,6 +5,7 @@ import axios from "axios";
 import Navbar from "../components/Navbar";
 import Button from "../components/Button";
 import { useAuth } from "../contexts/AuthContext";
+import { auth } from "../firebase";
 
 export default function Result() {
   const { currentUser, logout } = useAuth();
@@ -15,6 +16,7 @@ export default function Result() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [savedToHistory, setSavedToHistory] = useState(false);
 
   useEffect(() => {
     // First check if result was passed via navigation state
@@ -33,6 +35,33 @@ export default function Result() {
       fetchResultFromAPI(location.state.id);
     }
   }, [location, id]);
+
+  // Save result to backend history when available and user is signed in
+  useEffect(() => {
+    if (!result) return;
+    if (!currentUser) return; // require signed-in user
+    if (savedToHistory) return;
+
+    const save = async () => {
+      try {
+        const token = await auth.currentUser.getIdToken();
+        const payload = { ...result };
+        // POST to backend history endpoint
+        await axios.post("http://localhost:8000/history", payload, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+        console.log("✅ Result saved to history");
+        setSavedToHistory(true);
+      } catch (err) {
+        console.warn("⚠️ Could not save history:", err?.response?.data || err.message);
+      }
+    };
+
+    save();
+  }, [result, currentUser, savedToHistory]);
 
   const fetchResultFromAPI = async (resultId) => {
     setLoading(true);
