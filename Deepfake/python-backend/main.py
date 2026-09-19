@@ -433,6 +433,23 @@ def download_video(url: str, stem: str):
     return files[0], f"{title}{ext}"
 
 
+def friendly_download_error(message: str) -> str:
+    """Turns a yt-dlp error into a short message a user can act on."""
+    lower = message.lower()
+    if "not a bot" in lower or "sign in to confirm" in lower or "cookies" in lower:
+        return (
+            "This site blocked the download from our server. "
+            "Download the video yourself and upload the file instead."
+        )
+    if "private" in lower or "login" in lower or "members-only" in lower:
+        return "That video is private or needs a login, so it can't be downloaded."
+    if "unsupported url" in lower:
+        return "That link isn't a supported video page. Try a direct video link or upload the file."
+    if "http error 404" in lower or "not found" in lower:
+        return "That video couldn't be found. Check the link and try again."
+    return "Could not download that video. Try another link or upload the file instead."
+
+
 class UrlRequest(BaseModel):
     url: str
 
@@ -516,7 +533,7 @@ async def analyze_url(body: UrlRequest, authorization: str = Header(None)):
         except yt_dlp.utils.DownloadError as e:
             message = _ANSI.sub("", str(e)).replace("ERROR: ", "").strip()
             logger.warning(f"⚠️ yt-dlp failed for {url}: {message}")
-            raise HTTPException(status_code=400, detail=f"Could not download that video. {message}")
+            raise HTTPException(status_code=400, detail=friendly_download_error(message))
 
         logger.info(f"🔗 Analyzing download {display_name}")
         return JSONResponse(content=await run_analysis(path, display_name, uid))
