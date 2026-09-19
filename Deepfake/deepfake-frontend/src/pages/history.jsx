@@ -1,544 +1,261 @@
-import React, { useState, useEffect } from "react";
-import { useNavigate, Link } from "react-router-dom";
-import { useAuth } from "../contexts/AuthContext";
-import { auth } from "../firebase";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { BarChart3, ChevronRight, FileVideo, Plus, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import { AppLayout } from "../components/Layout";
+import { Alert, Button, Card, EmptyState, Input, PageHeader, Skeleton, StatCard, VerdictBadge } from "../components/ui";
+import { cn } from "../lib/cn";
+import { errorMessage, fetchHistory } from "../lib/api";
+import { fmtDate, fmtNum } from "../lib/format";
+
+const FILTERS = [
+  ["all", "All"],
+  ["FAKE", "Deepfakes"],
+  ["REAL", "Authentic"],
+];
+
+// Firestore docs wrap the analysis in a `data` field; in-memory results do not.
+function normalize(doc) {
+  const r = doc.data || doc;
+  const ts = r.timestamp || doc.created_at;
+  return {
+    id: r.id || doc.doc_id || doc.result_id,
+    filename: r.filename || "Untitled video",
+    time: ts ? new Date(ts).getTime() : 0,
+    prediction: r.prediction,
+    success: r.success !== false,
+    fakeProb: Number(r.fake_probability),
+    raw: r,
+  };
+}
+
+function FakeMeter({ value, fake }) {
+  const pct = Math.min(Math.max(value || 0, 0), 100);
+  return (
+    <div className="flex items-center gap-3">
+      <div className="h-1.5 w-20 overflow-hidden rounded-full bg-zinc-800">
+        <div
+          className={cn("h-full rounded-full", fake ? "bg-rose-500" : "bg-emerald-500")}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="w-12 text-right text-sm tabular-nums text-zinc-300">{fmtNum(value, 1)}%</span>
+    </div>
+  );
+}
 
 export default function History() {
-  const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
-  const [analyses, setAnalyses] = useState([]);
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
 
-  const handleLogout = async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      await logout();
-      navigate("/login");
+      const docs = await fetchHistory();
+      const seen = new Set();
+      const list = docs
+        .map(normalize)
+        .filter((a) => a.success && a.prediction)
+        .sort((a, b) => b.time - a.time)
+        // Older versions saved a result again each time it was viewed; keep one per result ID.
+        .filter((a) => {
+          if (!a.id) return true;
+          if (seen.has(a.id)) return false;
+          seen.add(a.id);
+          return true;
+        });
+      setItems(list);
     } catch (err) {
-      console.error("Logout failed:", err);
+      setError(errorMessage(err, "Couldn't load your history."));
+    } finally {
+      setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    if (!currentUser) navigate("/login");
-  }, [currentUser, navigate]);
+    load();
+  }, [load]);
 
-  useEffect(() => {
-    // Fetch analysis history from Firestore via backend
-    const fetchHistory = async () => {
-      try {
-        setLoading(true);
+  const stats = useMemo(() => {
+    const fakes = items.filter((a) => a.prediction === "FAKE").length;
+    return { total: items.length, fakes, real: items.length - fakes };
+  }, [items]);
 
-        // Build request – send Firebase ID token so backend returns this user's docs
-        const headers = {};
-        if (auth.currentUser) {
-          const token = await auth.currentUser.getIdToken();
-          headers["Authorization"] = `Bearer ${token}`;
-        }
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter(
+      (a) => (filter === "all" || a.prediction === filter) && (!q || a.filename.toLowerCase().includes(q))
+    );
+  }, [items, query, filter]);
 
-        const response = await fetch("http://localhost:8000/history", { headers });
-        const data = await response.json();
-
-        // Transform backend data to frontend format
-        // Firestore docs wrap the result inside a "data" field
-        const transformedData = (data.results || []).map((doc) => {
-          const result = doc.data || doc; // unwrap Firestore wrapper
-          const date = new Date(result.timestamp || doc.created_at);
-          const actualConfidence =
-            result.prediction === "FAKE"
-              ? result.fake_probability || result.confidence || 0
-              : result.real_probability || result.confidence || 0;
-
-          return {
-            id: result.id || doc.doc_id,
-            filename: result.filename,
-            uploadDate: date.toLocaleDateString(),
-            uploadTime: date.toLocaleTimeString(),
-            fullTimestamp: date.getTime(),
-            result: result.prediction === "FAKE" ? "Likely Deepfake" : "Authentic",
-            confidence: Math.round(actualConfidence),
-            status: "completed",
-            realScore: result.real_probability,
-            fakeScore: result.fake_probability,
-            _raw: result, // keep full result for View Details navigation
-          };
-        });
-
-        // Remove duplicates – keep only the latest upload of each filename
-        const uniqueVideos = {};
-        transformedData.forEach((analysis) => {
-          if (
-            !uniqueVideos[analysis.filename] ||
-            analysis.fullTimestamp > uniqueVideos[analysis.filename].fullTimestamp
-          ) {
-            uniqueVideos[analysis.filename] = analysis;
-          }
-        });
-
-        setAnalyses(Object.values(uniqueVideos));
-        setError(null);
-      } catch (err) {
-        console.error("Failed to fetch history:", err);
-        setError("Failed to load analysis history");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchHistory();
-  }, [currentUser]);
-
-  const viewVideo = (filename) => {
-    // Navigate to videos page or show video player
-    navigate(`/videos?play=${filename}`);
-  };
+  const open = (a) => navigate(a.id ? `/result/${a.id}` : "/result", { state: { result: a.raw } });
 
   return (
-    <div
-      style={{
-        padding: "20px",
-        backgroundColor: "#1a1a2e",
-        color: "#fff",
-        minHeight: "100vh",
-        fontFamily: "Arial, sans-serif",
-      }}
-    >
-      {/* Simple Navbar */}
-      <div
-        style={{
-          marginBottom: "30px",
-          paddingBottom: "20px",
-          borderBottom: "1px solid #9333ea",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
+    <AppLayout>
+      <PageHeader
+        title="History"
+        description="Every video you've analyzed while signed in."
+        actions={
+          <Button to="/">
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            New analysis
+          </Button>
+        }
+      />
+
+      {error && (
+        <Alert
+          className="mb-6"
+          title="Couldn't load your history"
+          action={
+            <Button variant="secondary" size="sm" onClick={load}>
+              Retry
+            </Button>
+          }
         >
-          <Link
-            to="/"
-            style={{
-              margin: 0,
-              color: "#a78bfa",
-              textDecoration: "none",
-              fontSize: "20px",
-              fontWeight: "bold",
-            }}
-          >
-            DeepScan
-          </Link>
-          <div
-            style={{
-              display: "flex",
-              gap: "10px",
-              alignItems: "center",
-            }}
-          >
-            {currentUser ? (
-              <>
-                <span
-                  style={{
-                    fontSize: "14px",
-                    color: "#d1d5db",
-                  }}
-                >
-                  {currentUser.email}
-                </span>
-                <button
-                  onClick={handleLogout}
-                  style={{
-                    padding: "8px 16px",
-                    backgroundColor: "#dc2626",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "4px",
-                    cursor: "pointer",
-                  }}
-                >
-                  Logout
-                </button>
-              </>
-            ) : null}
-          </div>
-        </div>
-      </div>
+          {error}
+        </Alert>
+      )}
 
-      {/* Container */}
-      <div
-        style={{
-          maxWidth: "1000px",
-          margin: "0 auto",
-          paddingTop: "20px",
-        }}
-      >
-        {/* Header */}
-        <div style={{ marginBottom: "30px" }}>
-          <h1
-            style={{
-              fontSize: "32px",
-              fontWeight: "bold",
-              color: "#a78bfa",
-              marginBottom: "10px",
-            }}
-          >
-            Analysis History
-          </h1>
-          <p
-            style={{
-              fontSize: "14px",
-              color: "#d1d5db",
-            }}
-          >
-            View all previously analyzed videos
-          </p>
-        </div>
-
-        {/* Loading State */}
-        {loading && (
-          <div style={{ textAlign: "center", padding: "50px", color: "#a78bfa" }}>
-            <div style={{ fontSize: "24px", marginBottom: "10px" }}>⏳</div>
-            <p>Loading analysis history...</p>
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && (
-          <div style={{
-            padding: "20px",
-            backgroundColor: "#7f1d1d",
-            borderRadius: "8px",
-            border: "1px solid #dc2626",
-            color: "#fecaca",
-            marginBottom: "20px"
-          }}>
-            ❌ {error}
-          </div>
-        )}
-
-        {/* Empty State */}
-        {!loading && !error && analyses.length === 0 && (
-          <div style={{
-            textAlign: "center",
-            padding: "50px",
-            backgroundColor: "#16213e",
-            borderRadius: "8px",
-            border: "1px solid #9333ea",
-          }}>
-            <div style={{ fontSize: "48px", marginBottom: "20px" }}>📊</div>
-            <h3 style={{ color: "#a78bfa", marginBottom: "10px" }}>No Analysis History Yet</h3>
-            <p style={{ color: "#d1d5db", marginBottom: "20px" }}>
-              Upload your first video to get started
-            </p>
-            <Link
-              to="/"
-              style={{
-                padding: "10px 20px",
-                backgroundColor: "#7c3aed",
-                color: "#fff",
-                textDecoration: "none",
-                borderRadius: "4px",
-                display: "inline-block",
-                fontWeight: "bold",
-              }}
-            >
-              Upload Video
-            </Link>
-          </div>
-        )}
-
-        {/* Stats Cards */}
-        {!loading && !error && analyses.length > 0 && (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
-              gap: "20px",
-              marginBottom: "30px",
-            }}
-          >
-            {[
-              {
-                label: "Total Analyses",
-                value: analyses.length,
-                icon: "📊",
-              },
-              {
-                label: "Authentic",
-                value: analyses.filter((a) => a.result === "Authentic").length,
-                icon: "✓",
-              },
-              {
-                label: "Deepfakes Detected",
-                value: analyses.filter((a) => a.result !== "Authentic").length,
-                icon: "⚠",
-              },
-            ].map((stat, idx) => (
-              <div
-                key={idx}
-                style={{
-                  backgroundColor: "#16213e",
-                  borderRadius: "8px",
-                  border: "1px solid #9333ea",
-                  padding: "20px",
-                }}
-              >
-                <div style={{ fontSize: "28px", marginBottom: "10px" }}>
-                  {stat.icon}
-                </div>
-                <p
-                  style={{
-                    fontSize: "12px",
-                    color: "#9ca3af",
-                    marginBottom: "5px",
-                  }}
-                >
-                  {stat.label}
-                </p>
-                <p
-                  style={{
-                    fontSize: "24px",
-                    fontWeight: "bold",
-                    color: "#fff",
-                  }}
-                >
-                  {stat.value}
-                </p>
-              </div>
+      {loading ? (
+        <div className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-[116px] rounded-2xl" />
             ))}
           </div>
-        )}
-
-        {/* History Table */}
-        {!loading && !error && analyses.length > 0 && (
-          <div
-            style={{
-              backgroundColor: "#16213e",
-              borderRadius: "8px",
-              border: "1px solid #9333ea",
-              overflow: "hidden",
-            }}
-          >
-            <div style={{ overflowX: "auto" }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-              }}
-            >
-              <thead>
-                <tr
-                  style={{
-                    backgroundColor: "#0f172a",
-                    borderBottom: "1px solid #9333ea",
-                  }}
-                >
-                  {["Filename", "Date & Time", "Result", "Confidence", "Status"].map(
-                    (header) => (
-                      <th
-                        key={header}
-                        style={{
-                          padding: "15px",
-                          textAlign: "left",
-                          fontSize: "14px",
-                          fontWeight: "bold",
-                          color: "#a78bfa",
-                          borderRight: "1px solid #9333ea",
-                        }}
-                      >
-                        {header}
-                      </th>
-                    )
-                  )}
-                </tr>
-              </thead>
-
-              <tbody>
-                {analyses.map((analysis) => (
-                  <tr
-                    key={analysis.id}
-                    style={{ borderBottom: "1px solid #4c1d95" }}
-                  >
-                    {/* Filename */}
-                    <td
-                      style={{
-                        padding: "15px",
-                        color: "#d1d5db",
-                        borderRight: "1px solid #4c1d95",
-                      }}
-                    >
-                      {analysis.filename}
-                    </td>
-
-                    {/* Date */}
-                    <td
-                      style={{
-                        padding: "15px",
-                        color: "#9ca3af",
-                        borderRight: "1px solid #4c1d95",
-                      }}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <span style={{ fontSize: '13px', color: '#d1d5db' }}>{analysis.uploadDate}</span>
-                        <span style={{ fontSize: '11px', color: '#6b7280' }}>{analysis.uploadTime}</span>
-                      </div>
-                    </td>
-
-                    {/* Result */}
-                    <td
-                      style={{
-                        padding: "15px",
-                        borderRight: "1px solid #4c1d95",
-                      }}
-                    >
-                      <span
-                        style={{
-                          padding: "4px 12px",
-                          borderRadius: "4px",
-                          fontSize: "12px",
-                          fontWeight: "bold",
-                          backgroundColor:
-                            analysis.result === "Authentic"
-                              ? "#064e3b"
-                              : "#7f1d1d",
-                          color:
-                            analysis.result === "Authentic"
-                              ? "#86efac"
-                              : "#fecaca",
-                          border:
-                            analysis.result === "Authentic"
-                              ? "1px solid #10b981"
-                              : "1px solid #dc2626",
-                        }}
-                      >
-                        {analysis.result}
-                      </span>
-                    </td>
-
-                    {/* Confidence */}
-                    <td
-                      style={{
-                        padding: "15px",
-                        borderRight: "1px solid #4c1d95",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "10px",
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: "60px",
-                            height: "6px",
-                            backgroundColor: "#4c1d95",
-                            borderRadius: "3px",
-                            overflow: "hidden",
-                          }}
-                        >
-                          <div
-                            style={{
-                              height: "100%",
-                              width: `${analysis.confidence}%`,
-                              backgroundColor:
-                                analysis.confidence >= 90
-                                  ? "#dc2626"
-                                  : "#f59e0b",
-                              borderRadius: "3px",
-                            }}
-                          ></div>
-                        </div>
-                        <span
-                          style={{
-                            fontSize: "12px",
-                            color: "#9ca3af",
-                            fontWeight: "bold",
-                          }}
-                        >
-                          {analysis.confidence}%
-                        </span>
-                      </div>
-                    </td>
-
-                    {/* Status */}
-                    <td style={{ padding: "15px" }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <span style={{ color: "#86efac", fontSize: "12px", fontWeight: "bold" }}>
-                          ✓ Completed
-                        </span>
-                        <Link
-                          to={`/result/${analysis.id}`}
-                          state={{ result: analysis._raw }}
-                          style={{
-                            fontSize: '12px',
-                            color: '#a78bfa',
-                            textDecoration: 'none',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          📋 View Details
-                        </Link>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Card className="space-y-4 p-6">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-10" />
+            ))}
+          </Card>
         </div>
-        )}
-
-        {/* CTA Section */}
-        {!loading && !error && analyses.length > 0 && (
-          <div
-            style={{
-              marginTop: "40px",
-              padding: "25px",
-              backgroundColor: "#16213e",
-              borderRadius: "8px",
-              border: "1px solid #9333ea",
-              textAlign: "center",
-            }}
-          >
-            <h3
-              style={{
-                fontSize: "20px",
-                fontWeight: "bold",
-                color: "#a78bfa",
-                marginBottom: "10px",
-              }}
-            >
-              Ready to Analyze More Videos?
-            </h3>
-            <p
-              style={{
-                color: "#d1d5db",
-                marginBottom: "15px",
-              }}
-            >
-              Upload new videos to check whether they're authentic or deepfakes.
-            </p>
-            <Link
-              to="/"
-              style={{
-                padding: "10px 20px",
-                backgroundColor: "#7c3aed",
-                color: "#fff",
-                textDecoration: "none",
-                borderRadius: "4px",
-                display: "inline-block",
-                fontWeight: "bold",
-              }}
-            >
-              Upload New Video
-            </Link>
+      ) : !error && items.length === 0 ? (
+        <EmptyState
+          icon={BarChart3}
+          title="No analyses yet"
+          description="Results are saved here automatically after each analysis."
+          action={<Button to="/">Analyze your first video</Button>}
+        />
+      ) : items.length > 0 ? (
+        <>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <StatCard label="Total analyses" value={stats.total} icon={BarChart3} tone="accent" />
+            <StatCard label="Likely authentic" value={stats.real} icon={ShieldCheck} tone="real" />
+            <StatCard label="Likely deepfakes" value={stats.fakes} icon={ShieldAlert} tone="fake" />
           </div>
-        )}
-      </div>
-    </div>
+
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="w-full sm:max-w-xs">
+              <Input
+                id="history-search"
+                icon={Search}
+                placeholder="Search by filename"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label="Search by filename"
+              />
+            </div>
+            <div role="radiogroup" aria-label="Filter by verdict" className="inline-flex rounded-lg bg-zinc-900 p-1 ring-1 ring-zinc-800">
+              {FILTERS.map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="radio"
+                  aria-checked={filter === key}
+                  onClick={() => setFilter(key)}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-sm font-medium transition",
+                    filter === key ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {visible.length === 0 ? (
+            <p className="mt-10 text-center text-sm text-zinc-500">No analyses match your search.</p>
+          ) : (
+            <>
+              {/* Desktop table */}
+              <Card className="mt-4 hidden overflow-hidden md:block">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-zinc-800 bg-zinc-900/80 text-xs uppercase tracking-wide text-zinc-500">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 font-medium">Video</th>
+                      <th scope="col" className="px-6 py-3 font-medium">Verdict</th>
+                      <th scope="col" className="px-6 py-3 font-medium">Fake probability</th>
+                      <th scope="col" className="px-6 py-3 font-medium">Analyzed</th>
+                      <th scope="col" className="px-6 py-3"><span className="sr-only">Open</span></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/80">
+                    {visible.map((a, i) => (
+                      <tr
+                        key={a.id || i}
+                        onClick={() => open(a)}
+                        className="group cursor-pointer transition-colors hover:bg-zinc-800/40"
+                      >
+                        <td className="max-w-xs px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <FileVideo className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
+                            <Link
+                              to={a.id ? `/result/${a.id}` : "/result"}
+                              state={{ result: a.raw }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="truncate font-medium text-zinc-100 hover:text-violet-300"
+                            >
+                              {a.filename}
+                            </Link>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <VerdictBadge prediction={a.prediction} />
+                        </td>
+                        <td className="px-6 py-4">
+                          <FakeMeter value={a.fakeProb} fake={a.prediction === "FAKE"} />
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-zinc-400">{fmtDate(a.time)}</td>
+                        <td className="px-6 py-4 text-right">
+                          <ChevronRight className="ml-auto h-4 w-4 text-zinc-600 transition group-hover:translate-x-0.5 group-hover:text-zinc-300" aria-hidden="true" />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+
+              {/* Mobile cards */}
+              <ul className="mt-4 space-y-3 md:hidden">
+                {visible.map((a, i) => (
+                  <li key={a.id || i}>
+                    <Link
+                      to={a.id ? `/result/${a.id}` : "/result"}
+                      state={{ result: a.raw }}
+                      className="block rounded-2xl border border-zinc-800/80 bg-zinc-900/60 p-4 transition hover:border-zinc-700"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="min-w-0 truncate font-medium text-zinc-100">{a.filename}</p>
+                        <VerdictBadge prediction={a.prediction} />
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3">
+                        <FakeMeter value={a.fakeProb} fake={a.prediction === "FAKE"} />
+                        <span className="text-xs text-zinc-500">{fmtDate(a.time, { dateStyle: "medium" })}</span>
+                      </div>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
+      ) : null}
+    </AppLayout>
   );
 }

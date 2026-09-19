@@ -12,8 +12,8 @@ export async function downloadVideo(videoUrl, outputDir) {
   const timestamp = Date.now();
   const outputTemplate = path.join(outputDir, `video_${timestamp}.mp4`);
 
-  // Updated command with SSL bypass for corporate networks
-  const command = `yt-dlp --no-check-certificate --extractor-args "youtube:player_client=default" -f "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best" --merge-output-format mp4 -o "${outputTemplate}" "${videoUrl}"`;
+  // Updated command with SSL bypass and cookies from browser for YouTube extraction
+  const command = `yt-dlp --no-check-certificate --cookies-from-browser edge -f "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best" --merge-output-format mp4 -o "${outputTemplate}" "${videoUrl}"`;
 
   console.log(`🔧 Executing: ${command}`);
 

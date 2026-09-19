@@ -1,57 +1,89 @@
-# Deepfake Detection Web App
+# DeepScan: Deepfake Detection Web App
 
-End-to-end deepfake detection system:
+Upload a video or paste a link, and DeepScan scores how likely it is to be a deepfake.
 
-- React + Firebase authentication frontend
-- Node.js + yt-dlp video downloader/bridge
-- FastAPI backend for model inference
+- **Frontend:** React + Vite + Tailwind, with Firebase Authentication.
+- **Backend:** FastAPI + PyTorch. An Xception network encodes 32 sampled frames and a bidirectional LSTM scores them. Links are downloaded with the yt-dlp library.
+- **Storage:** signed-in users' results are saved to Firestore.
 
 GitHub repository: `https://github.com/KEERTHAN-089/Deepfake_Detection`
 
-## Monorepo layout
+## Repository layout
 
-- `Deepfake/deepfake-frontend` – React + Firebase auth + UI
-- `Deepfake/node-downloader` – Node.js + Express + yt-dlp video downloader
-- `Deepfake/python-backend` – FastAPI backend to receive and analyze videos
+- `Deepfake/deepfake-frontend`: React app, deployed to Firebase Hosting.
+- `Deepfake/python-backend`: FastAPI API, deployed to Azure Container Apps.
+- `Deepfake/node-downloader`: **deprecated.** Link downloads now happen in the Python backend. Kept only for the local Videos page.
+- `Deepfake/xception_lstm_20260129_074841`: trained model. `best_model.pth` (152 MB) is stored with Git LFS.
 
-## Backend endpoints
+## API (Python backend)
 
-### Node downloader (http://localhost:3001)
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Service and model status |
+| `POST /analyze` | Analyze an uploaded video (`file` form field) |
+| `POST /analyze-url` | Download a video from a public link (`{"url": "..."}`) and analyze it |
+| `GET /result/{id}` | One of your saved results (Firebase ID token required) |
+| `GET /history` | Your saved results (Firebase ID token required) |
 
-- `GET /health` – service health
-- `POST /download` – body: `{ "videoUrl": "<YouTube_or_Instagram_URL>" }`
-- `GET /videos` – list downloaded videos
-- `GET /videos/stream/:filename` – stream a video (used by frontend player)
-- `GET /videos/download/:filename` – download a video file
+Signed-in callers send `Authorization: Bearer <Firebase ID token>`, and their results are saved to history automatically.
 
-### Python backend (http://localhost:8000)
+### Backend settings (environment variables)
 
-- `GET /` – health/status
-- `POST /analyze` – accepts a video file (`file` field, `UploadFile`) and returns analysis JSON
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MODEL_DIR` | `../xception_lstm_20260129_074841` | Folder with `best_model.pth` and `results.json` |
+| `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed by CORS |
+| `MAX_UPLOAD_MB` | `200` | Largest accepted upload or download |
+| `FIREBASE_PROJECT_ID` | none | Firebase project, when using Google Application Default Credentials |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | none | Service-account key content, as an alternative to a key file |
+| `FIREBASE_SERVICE_ACCOUNT` | none | Path to the key file (local alternative) |
+| `YTDLP_NO_CHECK_CERT` | off | Skip TLS checks for downloads. Local use only, for antivirus HTTPS scanning |
 
 ## Run locally
 
 ```bash
-# 1. Python backend (FastAPI)
+# 1. Backend (http://localhost:8000)
 cd Deepfake/python-backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
-# or: python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
-# 2. Node downloader (Express + yt-dlp)
-cd ../../Deepfake/node-downloader
-npm install
-npm start
-# service runs at http://localhost:3001
-
-# 3. Frontend (Vite + React)
+# 2. Frontend (http://localhost:3000)
 cd ../deepfake-frontend
 npm install
 npm run dev
-# app runs at http://localhost:5174
 ```
+
+Put the Firebase service-account key at `Deepfake/python-backend/firebase_service_account.json` to enable history. It is gitignored.
+YouTube links need a JavaScript runtime: [Deno](https://deno.com) or Node.js 20+.
+
+## Deploy
+
+**Backend: Azure Container Apps.** Works with an Azure for Students subscription.
+
+1. Pushing backend changes (or the model) runs the *Backend image* GitHub Actions workflow. It builds the Docker image and publishes it to `ghcr.io/keerthan-089/deepscan-api`. The model is stored in the repo with Git LFS.
+2. Deploy the latest image with the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows):
+
+```bash
+cd Deepfake/python-backend
+az login                       # once
+python deploy_azure.py         # creates or updates the Container App, prints the API URL
+```
+
+The app scales to zero when idle, so the first request after a quiet period takes about 30 seconds.
+The Firebase key from `firebase_service_account.json` is stored as an encrypted Container Apps secret.
+
+**Frontend: Firebase Hosting.** Put the API URL in `Deepfake/deepfake-frontend/.env.production` as `VITE_API_URL`, then:
+
+```bash
+cd Deepfake/deepfake-frontend
+npm run build
+npx firebase-tools login       # once
+npx firebase-tools deploy --only hosting
+```
+
+The site is served at `https://deepfake-auth-e79a8-b4ffa.web.app`.
 
 ## Troubleshooting
 
@@ -77,7 +109,7 @@ pip install python-certifi-win32
 python -m pip install --upgrade certifi
 ```
 
-**The app already uses `--no-check-certificate` as a workaround**, but for security, it's better to fix the root cause.
+As a last resort for local use only, set `YTDLP_NO_CHECK_CERT=1` before starting the backend. Fixing the root cause is safer.
 
 ### YouTube download issues (HTTP 403 / Empty file)
 

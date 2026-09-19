@@ -52,6 +52,7 @@ app.post('/download', async (req, res) => {
 
     const timestamp = Date.now();
     const outputTemplate = path.join(VIDEOS_DIR, `video_${timestamp}.%(ext)s`);
+    let outputPath = null;
 
     try {
         console.log('⏬ Downloading video...');
@@ -66,25 +67,93 @@ app.post('/download', async (req, res) => {
             });
         });
 
-        // Download best available format without recoding (avoids codec issues)
-        // The backend supports multiple formats: .mp4, .avi, .mov, .mkv, .flv, .wmv
-        const ytDlpCommand = `yt-dlp --no-check-certificate -o "${outputTemplate}" "${url}"`;
-        
-        console.log('🔧 Executing yt-dlp...');
+        // Prefer cookies.txt when available (more reliable than live browser DB access)
+        const cookiesFile = process.env.YTDLP_COOKIES_FILE || path.join(__dirname, 'cookies.txt');
+        const hasCookiesFile = fs.existsSync(cookiesFile);
 
-        await new Promise((resolve, reject) => {
-            exec(ytDlpCommand, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-                if (error) {
-                    console.error('❌ yt-dlp error:', error);
-                    reject(error);
-                    return;
-                }
-                if (stderr) console.log('📝 yt-dlp stderr:', stderr);
-                if (stdout) console.log('📝 yt-dlp stdout:', stdout);
-                console.log('✅ Download complete');
-                resolve();
+        // Download best available format - try multiple approaches
+        // Approach order: 1) No auth, 2) Different player clients, 3) cookies.txt, 4) Browser cookies
+        const downloadMethods = [
+            // Method 1: Try without auth first (works for many public videos)
+            {
+                name: 'default (no auth)',
+                cmd: `yt-dlp --no-check-certificate --js-runtimes node --extractor-args "youtube:player_client=web" -o "${outputTemplate}" "${url}"`
+            },
+            // Method 2: Try with android client (often bypasses restrictions)
+            {
+                name: 'android client',
+                cmd: `yt-dlp --no-check-certificate --js-runtimes node --extractor-args "youtube:player_client=android" -o "${outputTemplate}" "${url}"`
+            },
+            // Method 3: Try with ios client
+            {
+                name: 'ios client',
+                cmd: `yt-dlp --no-check-certificate --js-runtimes node --extractor-args "youtube:player_client=ios" -o "${outputTemplate}" "${url}"`
+            },
+        ];
+
+        if (hasCookiesFile) {
+            downloadMethods.push({
+                name: 'cookies.txt file',
+                cmd: `yt-dlp --no-check-certificate --js-runtimes node --cookies "${cookiesFile}" -o "${outputTemplate}" "${url}"`
             });
-        });
+        }
+
+        // Method 4/5: Browser cookie extraction (can fail if browser is open/locked)
+        downloadMethods.push(
+            {
+                name: 'edge cookies',
+                cmd: `yt-dlp --no-check-certificate --js-runtimes node --cookies-from-browser edge -o "${outputTemplate}" "${url}"`
+            },
+            {
+                name: 'chrome cookies',
+                cmd: `yt-dlp --no-check-certificate --js-runtimes node --cookies-from-browser chrome -o "${outputTemplate}" "${url}"`
+            }
+        );
+
+        let downloadSuccess = false;
+        let lastError = null;
+
+        for (const method of downloadMethods) {
+            console.log(`🔧 Trying yt-dlp with ${method.name}...`);
+
+            try {
+                await new Promise((resolve, reject) => {
+                    exec(method.cmd, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
+                        if (error) {
+                            if (stderr) {
+                                console.log(`📝 yt-dlp stderr (${method.name}):`, stderr);
+                            }
+                            reject(error);
+                            return;
+                        }
+                        if (stderr) console.log('📝 yt-dlp stderr:', stderr);
+                        if (stdout) console.log('📝 yt-dlp stdout:', stdout);
+                        console.log(`✅ Download complete using ${method.name}`);
+                        resolve();
+                    });
+                });
+                downloadSuccess = true;
+                break;
+            } catch (error) {
+                console.log(`⚠️ Failed with ${method.name}, trying next...`);
+                lastError = error;
+            }
+        }
+
+        if (!downloadSuccess) {
+            const combinedError = (lastError && (lastError.stderr || lastError.message || String(lastError))) || 'Unknown yt-dlp failure';
+            const isCookieDbLocked = combinedError.includes('Could not copy Chrome cookie database') || combinedError.includes('Could not copy Edge cookie database');
+
+            console.error('❌ All download methods failed:', lastError);
+
+            if (isCookieDbLocked) {
+                throw new Error(
+                    `YouTube blocked anonymous download and browser cookies are locked. Close Chrome/Edge fully and retry, or provide ${cookiesFile} (set YTDLP_COOKIES_FILE to override).`
+                );
+            }
+
+            throw new Error('Failed to download this YouTube URL. If it is public, retry in a few minutes. If gated, provide cookies.txt in node-downloader.');
+        }
 
         // Find the downloaded file (extension might vary)
         const files = fs.readdirSync(VIDEOS_DIR).filter(f => f.startsWith(`video_${timestamp}`));
@@ -94,7 +163,7 @@ app.post('/download', async (req, res) => {
         }
         
         const actualFilename = files[0];
-        const outputPath = path.join(VIDEOS_DIR, actualFilename);
+        outputPath = path.join(VIDEOS_DIR, actualFilename);
         
         console.log(`📁 Downloaded file: ${actualFilename}`);
 
@@ -142,7 +211,7 @@ app.post('/download', async (req, res) => {
         console.error('❌ Error:', error.message);
 
         try {
-            if (fs.existsSync(outputPath)) {
+            if (outputPath && fs.existsSync(outputPath)) {
                 fs.unlinkSync(outputPath);
             }
         } catch (err) {}
@@ -157,7 +226,11 @@ app.post('/download', async (req, res) => {
 
 function killPort(port) {
     return new Promise((resolve) => {
-        exec(`lsof -ti:${port} | xargs kill -9`, (error) => {
+        const command = process.platform === 'win32'
+            ? `for /f "tokens=5" %a in ('netstat -aon ^| findstr :${port} ^| findstr LISTENING') do taskkill /PID %a /F`
+            : `lsof -ti:${port} | xargs kill -9`;
+
+        exec(command, (error) => {
             if (error) {
                 console.log(`ℹ️  No existing process on port ${port}`);
             } else {

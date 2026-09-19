@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
-// Your new Firebase configuration
+// Web config for the "deepfake-auth-e79a8-b4ffa" Firebase project. These values are public by design.
 const firebaseConfig = {
   apiKey: "AIzaSyD9_NcjbJweTYi14YHdiye3gE7Wk1xFPtk",
   authDomain: "deepfake-auth-e79a8-b4ffa.firebaseapp.com",
