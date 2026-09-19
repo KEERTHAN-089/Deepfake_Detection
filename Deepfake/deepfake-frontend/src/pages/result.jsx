@@ -1,472 +1,335 @@
-import React, { useState, useEffect } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import axios from "axios";
-
-import Navbar from "../components/Navbar";
-import Button from "../components/Button";
+import React, { useEffect, useState } from "react";
+import { useLocation, useParams } from "react-router-dom";
+import {
+  AlertTriangle,
+  Clock,
+  FileText,
+  FileVideo,
+  Film,
+  Gauge,
+  History,
+  RotateCcw,
+  SearchX,
+  ShieldAlert,
+  ShieldCheck,
+  Timer,
+} from "lucide-react";
+import { AppLayout } from "../components/Layout";
+import { Alert, Button, Card, EmptyState, Spinner, StatCard, VerdictBadge } from "../components/ui";
+import { cn } from "../lib/cn";
 import { useAuth } from "../contexts/AuthContext";
-import { auth } from "../firebase";
+import { errorMessage, fetchResult } from "../lib/api";
+import { fmtDate, fmtDuration, fmtNum, isNum } from "../lib/format";
+import { generateHTMLReport } from "../utils/reportGenerator";
+
+function ScoreRing({ value, threshold, fake }) {
+  const radius = 70;
+  const circumference = 2 * Math.PI * radius;
+  const pct = Math.min(Math.max(Number(value) || 0, 0), 100);
+  const tickAngle = isNum(threshold) ? (Number(threshold) / 100) * 2 * Math.PI : null;
+
+  return (
+    <div className="relative mx-auto h-48 w-48 shrink-0">
+      <svg viewBox="0 0 180 180" className="h-full w-full -rotate-90" aria-hidden="true">
+        <circle cx="90" cy="90" r={radius} fill="none" strokeWidth="12" className="stroke-zinc-800" />
+        <circle
+          cx="90"
+          cy="90"
+          r={radius}
+          fill="none"
+          strokeWidth="12"
+          strokeLinecap="round"
+          strokeDasharray={`${(pct / 100) * circumference} ${circumference}`}
+          className={cn("transition-all duration-1000 ease-out", fake ? "stroke-rose-500" : "stroke-emerald-500")}
+        />
+        {tickAngle !== null && (
+          <line
+            x1={90 + (radius - 11) * Math.cos(tickAngle)}
+            y1={90 + (radius - 11) * Math.sin(tickAngle)}
+            x2={90 + (radius + 11) * Math.cos(tickAngle)}
+            y2={90 + (radius + 11) * Math.sin(tickAngle)}
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            className="stroke-amber-300"
+          />
+        )}
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+        <span className="text-4xl font-semibold tabular-nums tracking-tight text-white">{fmtNum(value, 1)}%</span>
+        <span className="mt-1 text-xs text-zinc-400">fake probability</span>
+      </div>
+    </div>
+  );
+}
+
+function ProbabilityBar({ label, value, tone, threshold }) {
+  const pct = Math.min(Math.max(Number(value) || 0, 0), 100);
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between text-sm">
+        <span className="text-zinc-300">{label}</span>
+        <span className="font-medium tabular-nums text-white">{fmtNum(value, 2)}%</span>
+      </div>
+      <div className="relative h-2.5 rounded-full bg-zinc-800">
+        <div
+          className={cn(
+            "h-full rounded-full transition-[width] duration-1000 ease-out",
+            tone === "fake" ? "bg-rose-500" : "bg-emerald-500"
+          )}
+          style={{ width: `${pct}%` }}
+        />
+        {isNum(threshold) && (
+          <div
+            className="absolute -top-1 h-[18px] w-0.5 rounded-full bg-amber-300"
+            style={{ left: `${threshold}%` }}
+            title={`Detection threshold: ${threshold}%`}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DetailList({ items }) {
+  return (
+    <dl className="divide-y divide-zinc-800/80">
+      {items.map(([term, value]) => (
+        <div key={term} className="flex items-start justify-between gap-4 py-3 text-sm">
+          <dt className="shrink-0 text-zinc-400">{term}</dt>
+          <dd className="min-w-0 break-words text-right font-medium text-zinc-100">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function openReport(result, { confidence, realProb, fakeProb, threshold }) {
+  const html = generateHTMLReport(result, confidence, realProb, fakeProb, threshold);
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  const win = window.open(url, "_blank", "width=1200,height=800");
+  if (!win) {
+    // Popup blocked: fall back to downloading the file.
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `deepscan-report-${result.id || Date.now()}.html`;
+    a.click();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 export default function Result() {
-  const { currentUser, logout } = useAuth();
+  const { currentUser } = useAuth();
+  const { id } = useParams();
   const location = useLocation();
-  const navigate = useNavigate();
-  const { id } = useParams(); // Get ID from URL params
+  const stateResult = location.state?.result ?? null;
 
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [savedToHistory, setSavedToHistory] = useState(false);
+  // Holds the outcome of fetching `forId`; a mismatch with the current id means "still loading".
+  const [fetched, setFetched] = useState({ forId: null, data: null, error: "" });
+  const needsFetch = !stateResult && Boolean(id);
 
   useEffect(() => {
-    // First check if result was passed via navigation state
-    if (location.state?.result) {
-      console.log("📊 Result data received from navigation:", location.state.result);
-      setResult(location.state.result);
-    } 
-    // If not, and we have an ID in the URL, fetch from API
-    else if (id) {
-      console.log("🔍 Fetching result from API for ID:", id);
-      fetchResultFromAPI(id);
-    }
-    // If we have an ID in the result state, fetch it
-    else if (location.state?.id) {
-      console.log("🔍 Fetching result from API for ID:", location.state.id);
-      fetchResultFromAPI(location.state.id);
-    }
-  }, [location, id]);
-
-  // Save result to backend history when available and user is signed in
-  useEffect(() => {
-    if (!result) return;
-    if (!currentUser) return; // require signed-in user
-    if (savedToHistory) return;
-
-    const save = async () => {
-      try {
-        const token = await auth.currentUser.getIdToken();
-        const payload = { ...result };
-        // POST to backend history endpoint
-        await axios.post("http://localhost:8000/history", payload, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-        });
-        console.log("✅ Result saved to history");
-        setSavedToHistory(true);
-      } catch (err) {
-        console.warn("⚠️ Could not save history:", err?.response?.data || err.message);
-      }
+    if (!needsFetch) return undefined;
+    let cancelled = false;
+    fetchResult(id)
+      .then((data) => !cancelled && setFetched({ forId: id, data, error: "" }))
+      .catch(
+        (err) =>
+          !cancelled &&
+          setFetched({ forId: id, data: null, error: errorMessage(err, "Couldn't load this result.") })
+      );
+    return () => {
+      cancelled = true;
     };
+  }, [id, needsFetch]);
 
-    save();
-  }, [result, currentUser, savedToHistory]);
-
-  const fetchResultFromAPI = async (resultId) => {
-    setLoading(true);
-    setError(null);
-    
-    try {
-      console.log(`📡 Fetching from: http://localhost:8000/result/${resultId}`);
-      const response = await axios.get(`http://localhost:8000/result/${resultId}`);
-      console.log("✅ Result fetched:", response.data);
-      setResult(response.data);
-    } catch (err) {
-      console.error("❌ Error fetching result:", err);
-      setError(err.response?.data?.detail || "Failed to load result");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const loading = needsFetch && fetched.forId !== id;
+  const error = needsFetch ? fetched.error : "";
+  const result = stateResult || (needsFetch ? fetched.data : null);
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-purple-500 mx-auto mb-4"></div>
-          <div className="text-white text-xl">Loading result...</div>
+      <AppLayout className="flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-sm text-zinc-400" role="status">
+          <Spinner className="h-7 w-7" />
+          Loading result…
         </div>
-      </div>
+      </AppLayout>
     );
   }
 
-  if (error) {
+  if (error || !result) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-red-400 text-xl mb-4">❌ {error}</div>
-          <Link 
-            to="/" 
-            className="inline-block px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-bold"
-          >
-            ← Back to Home
-          </Link>
-        </div>
-      </div>
+      <AppLayout>
+        <EmptyState
+          className="mx-auto max-w-lg"
+          icon={SearchX}
+          title={error ? "Couldn't load this result" : "No result to show"}
+          description={error || "Run an analysis first, or open a past result from your history."}
+          action={
+            <>
+              <Button to="/">Analyze a video</Button>
+              {currentUser && (
+                <Button to="/history" variant="secondary">
+                  View history
+                </Button>
+              )}
+            </>
+          }
+        />
+      </AppLayout>
     );
   }
 
-  if (!result) {
+  if (result.success === false || !result.prediction) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-white text-xl mb-4">No result data available</div>
-          <Link 
-            to="/" 
-            className="inline-block px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-bold"
-          >
-            ← Back to Home
-          </Link>
-        </div>
-      </div>
+      <AppLayout>
+        <EmptyState
+          className="mx-auto max-w-lg"
+          icon={AlertTriangle}
+          title="The analysis didn't finish"
+          description={result.error || "The model could not produce a result for this video."}
+          action={<Button to="/">Try another video</Button>}
+        />
+      </AppLayout>
     );
   }
 
-  const isPredictionReal = result.prediction === 'REAL';
-  const realProb = parseFloat(result.real_probability || 0);
-  const fakeProb = parseFloat(result.fake_probability || 0);
-  const confidence = parseFloat(result.confidence || 0);
-  const threshold = parseFloat(result.threshold || 35);
+  const fake = result.prediction === "FAKE";
+  const realProb = Number(result.real_probability) || 0;
+  const fakeProb = Number(result.fake_probability) || 0;
+  const confidence = Number(result.confidence) || 0;
+  const threshold = isNum(result.threshold) ? Number(result.threshold) : null;
+  const info = result.video_info || {};
+  const VerdictIcon = fake ? ShieldAlert : ShieldCheck;
+
+  const comparison =
+    threshold === null
+      ? ""
+      : fake
+        ? `, at or above the ${fmtNum(threshold, 0)}% detection threshold`
+        : `, below the ${fmtNum(threshold, 0)}% detection threshold`;
 
   return (
-    <>
-      {/* Navbar */}
-      <Navbar currentUser={currentUser} onLogout={logout} />
-
-      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-900 to-slate-900 py-12 px-4 relative overflow-hidden">
-
-        {/* Animated Background */}
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute top-0 left-1/4 w-64 h-64 bg-purple-600 mix-blend-multiply blur-3xl opacity-15 animate-pulse"></div>
-          <div
-            className="absolute bottom-0 right-1/4 w-64 h-64 bg-blue-600 mix-blend-multiply blur-3xl opacity-15 animate-pulse"
-            style={{ animationDelay: "2s" }}
-          ></div>
-        </div>
-
-        <div className="relative max-w-5xl mx-auto">
-
-          {/* RESULT HEADER */}
-          <div
-            className={`rounded-2xl p-8 mb-8 text-center border backdrop-blur-xl ${
-              !isPredictionReal
-                ? "bg-red-900/30 border-red-500/40"
-                : "bg-green-900/30 border-green-500/40"
-            }`}
-          >
-            <div
-              className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-5 shadow-xl ${
-                !isPredictionReal
-                  ? "bg-gradient-to-br from-red-600 to-pink-600"
-                  : "bg-gradient-to-br from-green-600 to-emerald-600"
-              }`}
-            >
-              {!isPredictionReal ? (
-                <svg
-                  className="w-10 h-10 text-white"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              ) : (
-                <svg
-                  className="w-10 h-10 text-white"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              )}
-            </div>
-
-            <h1
-              className={`text-3xl font-black mb-3 bg-clip-text text-transparent ${
-                !isPredictionReal
-                  ? "bg-gradient-to-r from-red-400 to-pink-400"
-                  : "bg-gradient-to-r from-green-400 to-emerald-400"
-              }`}
-            >
-              {!isPredictionReal ? "⚠️ Deepfake Detected" : "✅ Authentic Content"}
-            </h1>
-
-            <p
-              className={`text-lg font-semibold ${
-                !isPredictionReal ? "text-red-300" : "text-green-300"
-              }`}
-            >
-              Confidence: {confidence.toFixed(2)}%
-            </p>
-          </div>
-
-          {/* PROBABILITY GRAPH */}
-          <div className="rounded-2xl border border-purple-500/20 bg-gradient-to-br from-gray-800/50 to-gray-900/50 backdrop-blur-xl p-8 mb-8">
-            <h2 className="text-2xl font-black text-white mb-6">
-              📊 Probability Distribution
-            </h2>
-            
-            <div className="space-y-6">
-              {/* Real Bar */}
-              <div>
-                <div className="flex justify-between text-white mb-3">
-                  <span className="font-semibold text-lg">✅ Real</span>
-                  <span className="font-bold text-xl">{realProb.toFixed(2)}%</span>
-                </div>
-                <div className="w-full bg-gray-700/50 rounded-full h-10 overflow-hidden border border-gray-600">
-                  <div
-                    className="bg-gradient-to-r from-green-500 to-emerald-600 h-10 rounded-full flex items-center justify-end pr-4 transition-all duration-1000 ease-out"
-                    style={{ width: `${realProb}%` }}
-                  >
-                    {realProb > 10 && (
-                      <span className="text-white font-bold text-sm">{realProb.toFixed(2)}%</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Fake Bar */}
-              <div>
-                <div className="flex justify-between text-white mb-3">
-                  <span className="font-semibold text-lg">❌ Fake</span>
-                  <span className="font-bold text-xl">{fakeProb.toFixed(2)}%</span>
-                </div>
-                <div className="w-full bg-gray-700/50 rounded-full h-10 overflow-hidden border border-gray-600">
-                  <div
-                    className="bg-gradient-to-r from-red-500 to-pink-600 h-10 rounded-full flex items-center justify-end pr-4 transition-all duration-1000 ease-out"
-                    style={{ width: `${fakeProb}%` }}
-                  >
-                    {fakeProb > 10 && (
-                      <span className="text-white font-bold text-sm">{fakeProb.toFixed(2)}%</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Threshold Indicator */}
-              <div className="mt-6 p-4 bg-yellow-900/20 border border-yellow-500/30 rounded-lg">
-                <div className="flex justify-between items-center">
-                  <span className="text-yellow-300 font-semibold">🎯 Detection Threshold</span>
-                  <span className="text-yellow-200 font-bold text-lg">{threshold.toFixed(2)}%</span>
-                </div>
-                <p className="text-yellow-200/70 text-sm mt-2">
-                  Videos with fake probability above {threshold.toFixed(2)}% are classified as deepfakes
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* FILE INFO & VIDEO DETAILS */}
-          <div className="grid md:grid-cols-2 gap-8 mb-8">
-
-            {/* FILE INFO CARD */}
-            <div className="rounded-2xl border border-purple-500/20 bg-gradient-to-br from-gray-800/50 to-gray-900/50 backdrop-blur-xl p-8">
-              <h2 className="text-2xl font-black text-white mb-6">
-                📁 File Information
-              </h2>
-
-              <div className="space-y-5 text-gray-300">
-                <div>
-                  <p className="text-sm text-gray-500">Filename</p>
-                  <p className="font-semibold mt-1 break-all">{result.filename || 'N/A'}</p>
-                </div>
-
-                <div>
-                  <p className="text-sm text-gray-500">File Size</p>
-                  <p className="font-semibold mt-1">{result.file_size_mb || 'N/A'} MB</p>
-                </div>
-
-                <div>
-                  <p className="text-sm text-gray-500">Processing Time</p>
-                  <p className="font-semibold mt-1">{result.processing_time_ms ? (result.processing_time_ms / 1000).toFixed(2) : 'N/A'}s</p>
-                </div>
-
-                <div>
-                  <p className="text-sm text-gray-500">Analysis Date</p>
-                  <p className="font-semibold mt-1">{result.timestamp ? new Date(result.timestamp).toLocaleString() : 'N/A'}</p>
-                </div>
-
-                <div>
-                  <p className="text-sm text-gray-500">Model Version</p>
-                  <p className="font-semibold mt-1">{result.model_version || 'N/A'}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* VIDEO DETAILS CARD */}
-            <div className="rounded-2xl border border-purple-500/20 bg-gradient-to-br from-gray-800/50 to-gray-900/50 backdrop-blur-xl p-8">
-              <h2 className="text-2xl font-black text-white mb-6">
-                🎥 Video Details
-              </h2>
-
-              <div className="space-y-5 text-gray-300">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-500">Total Frames</p>
-                    <p className="font-semibold mt-1 text-2xl">{result.video_info?.total_frames || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Analyzed</p>
-                    <p className="font-semibold mt-1 text-2xl">{result.video_info?.frames_analyzed || 'N/A'}</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-500">FPS</p>
-                    <p className="font-semibold mt-1 text-2xl">{result.video_info?.fps?.toFixed(2) || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Duration</p>
-                    <p className="font-semibold mt-1 text-2xl">{result.video_info?.duration?.toFixed(2) || 'N/A'}s</p>
-                  </div>
-                </div>
-
-                {result.video_info?.total_frames && result.video_info?.frames_analyzed && (
-                  <div className="mt-4 p-4 bg-purple-900/30 border border-purple-500/30 rounded-lg">
-                    <p className="text-purple-200 text-sm">
-                      <span className="font-bold">Coverage:</span> {((result.video_info.frames_analyzed / result.video_info.total_frames) * 100).toFixed(1)}% of video analyzed
-                    </p>
-                  </div>
+    <AppLayout>
+      <Card
+        className={cn(
+          "relative overflow-hidden p-6 sm:p-10",
+          fake ? "border-rose-500/30" : "border-emerald-500/30"
+        )}
+      >
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full opacity-25 blur-3xl",
+            fake ? "bg-rose-600" : "bg-emerald-600"
+          )}
+        />
+        <div className="relative flex flex-col gap-10 md:flex-row md:items-center md:justify-between">
+          <div className="max-w-xl">
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "flex h-10 w-10 items-center justify-center rounded-xl ring-1",
+                  fake ? "bg-rose-500/10 text-rose-300 ring-rose-500/30" : "bg-emerald-500/10 text-emerald-300 ring-emerald-500/30"
                 )}
-              </div>
+              >
+                <VerdictIcon className="h-5 w-5" aria-hidden="true" />
+              </span>
+              <VerdictBadge prediction={result.prediction} />
             </div>
-
-          </div>
-
-          {/* CONFIDENCE GAUGE */}
-          <div className="rounded-2xl border border-purple-500/20 bg-gradient-to-br from-gray-800/50 to-gray-900/50 backdrop-blur-xl p-8 mb-8">
-            <h2 className="text-2xl font-black text-white mb-6 text-center">
-              Overall Confidence Score
-            </h2>
-
-            <div className="flex flex-col items-center">
-              <div className="relative w-48 h-48">
-                <svg viewBox="0 0 200 200" className="w-full h-full -rotate-90">
-                  <circle cx="100" cy="100" r="85" stroke="#374151" strokeWidth="16" fill="none" />
-
-                  <circle
-                    cx="100"
-                    cy="100"
-                    r="85"
-                    strokeWidth="16"
-                    fill="none"
-                    stroke={`url(#${!isPredictionReal ? "red" : "green"}Gradient)`}
-                    strokeDasharray={`${2 * Math.PI * 85 * (confidence / 100)} ${2 * Math.PI * 85}`}
-                    strokeLinecap="round"
-                    className="transition-all duration-1000"
-                  />
-
-                  <defs>
-                    <linearGradient id="redGradient">
-                      <stop offset="0%" stopColor="#ef4444" />
-                      <stop offset="100%" stopColor="#ec4899" />
-                    </linearGradient>
-
-                    <linearGradient id="greenGradient">
-                      <stop offset="0%" stopColor="#22c55e" />
-                      <stop offset="100%" stopColor="#10b981" />
-                    </linearGradient>
-                  </defs>
-                </svg>
-
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <p
-                      className={`text-5xl font-black bg-clip-text text-transparent ${
-                        !isPredictionReal
-                          ? "bg-gradient-to-r from-red-400 to-pink-400"
-                          : "bg-gradient-to-r from-green-400 to-emerald-400"
-                      }`}
-                    >
-                      {confidence.toFixed(2)}%
-                    </p>
-
-                    <p className="text-gray-400 text-sm mt-2 font-semibold">Certainty</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-6 text-center">
-                <span
-                  className={`inline-block px-6 py-3 text-lg font-bold rounded-lg border ${
-                    !isPredictionReal
-                      ? "bg-red-900/40 border-red-500/40 text-red-300"
-                      : "bg-green-900/40 border-green-500/40 text-green-300"
-                  }`}
-                >
-                  {!isPredictionReal ? "⚠️ DEEPFAKE" : "✅ AUTHENTIC"}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* ACTION BUTTONS */}
-          <div className="flex flex-col sm:flex-row justify-center gap-4 mt-8">
-            <Button as={Link} to="/" className="px-10 py-4 text-lg">
-              🔄 Analyze Another Video
-            </Button>
-
-            <Button as={Link} to="/history" variant="secondary" className="px-10 py-4 text-lg">
-              📜 View History
-            </Button>
-
-            <Button
-              variant="secondary"
-              className="px-10 py-4 text-lg"
-              onClick={() => {
-                const reportData = `
-DEEPFAKE DETECTION REPORT
-========================
-
-Filename: ${result.filename || 'N/A'}
-Analysis Date: ${result.timestamp ? new Date(result.timestamp).toLocaleString() : 'N/A'}
-
-RESULT: ${result.prediction}
-Confidence: ${confidence.toFixed(2)}%
-
-PROBABILITIES:
-- Real: ${realProb.toFixed(2)}%
-- Fake: ${fakeProb.toFixed(2)}%
-
-VIDEO INFORMATION:
-- Total Frames: ${result.video_info?.total_frames || 'N/A'}
-- Frames Analyzed: ${result.video_info?.frames_analyzed || 'N/A'}
-- FPS: ${result.video_info?.fps?.toFixed(2) || 'N/A'}
-- Duration: ${result.video_info?.duration?.toFixed(2) || 'N/A'}s
-- File Size: ${result.file_size_mb || 'N/A'} MB
-
-TECHNICAL DETAILS:
-- Model: ${result.model_version || 'N/A'}
-- Threshold: ${threshold.toFixed(2)}%
-- Processing Time: ${result.processing_time_ms ? (result.processing_time_ms / 1000).toFixed(2) : 'N/A'}s
-
-========================
-Report generated by DeepScan AI
-                `;
-                const blob = new Blob([reportData], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `deepfake-report-${result.id || Date.now()}.txt`;
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
-            >
-              📥 Download Report
-            </Button>
-          </div>
-
-          {/* DISCLAIMER */}
-          <div className="mt-12 p-6 rounded-lg bg-blue-900/30 border border-blue-500/30">
-            <p className="text-blue-300 text-sm leading-relaxed">
-              <span className="font-bold">⚠️ Disclaimer:</span> This AI analysis is intended for informational purposes only. The model analyzes {result.video_info?.frames_analyzed || 'N/A'} frames using BiLSTM and ResNet50 architecture with a detection threshold of {threshold.toFixed(2)}%. Always conduct additional verification when authenticity is crucial for legal, security, or investigative purposes.
+            <h1 className="mt-5 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              {fake ? "This video shows signs of manipulation" : "No signs of manipulation found"}
+            </h1>
+            <p className="mt-3 leading-relaxed text-zinc-400">
+              The model rated this video {fmtNum(fakeProb, 1)}% likely to be fake{comparison}.
+            </p>
+            <p className="mt-5 flex min-w-0 items-center gap-2 text-sm text-zinc-500">
+              <FileVideo className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span className="truncate">{result.filename || "Untitled video"}</span>
             </p>
           </div>
+          <ScoreRing value={fakeProb} threshold={threshold} fake={fake} />
         </div>
+      </Card>
+
+      <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard
+          label="Confidence"
+          value={`${fmtNum(confidence, 1)}%`}
+          sublabel={`in the "${fake ? "fake" : "real"}" verdict`}
+          icon={Gauge}
+          tone={fake ? "fake" : "real"}
+        />
+        <StatCard
+          label="Frames analyzed"
+          value={info.frames_analyzed ?? "—"}
+          sublabel={isNum(info.total_frames) ? `of ${info.total_frames} total` : undefined}
+          icon={Film}
+          tone="accent"
+        />
+        <StatCard label="Duration" value={fmtDuration(info.duration)} icon={Clock} />
+        <StatCard
+          label="Processing time"
+          value={isNum(result.processing_time_ms) ? fmtDuration(result.processing_time_ms / 1000) : "—"}
+          icon={Timer}
+        />
       </div>
-    </>
+
+      <div className="mt-6 grid gap-6 lg:grid-cols-5">
+        <Card className="p-6 lg:col-span-3">
+          <h2 className="font-medium text-white">Probability breakdown</h2>
+          <p className="mt-1 text-sm text-zinc-400">How the model split its score between the two classes.</p>
+          <div className="mt-6 space-y-6">
+            <ProbabilityBar label="Real" value={realProb} tone="real" />
+            <ProbabilityBar label="Fake" value={fakeProb} tone="fake" threshold={threshold} />
+          </div>
+          {threshold !== null && (
+            <p className="mt-6 flex items-center gap-2 text-xs text-zinc-500">
+              <span className="h-3 w-0.5 rounded-full bg-amber-300" aria-hidden="true" />
+              Videos at or above {fmtNum(threshold, 0)}% fake probability are flagged as deepfakes.
+            </p>
+          )}
+        </Card>
+
+        <Card className="px-6 py-4 lg:col-span-2">
+          <h2 className="pt-2 font-medium text-white">Details</h2>
+          <DetailList
+            items={[
+              ["File size", isNum(result.file_size_mb) ? `${fmtNum(result.file_size_mb, 2)} MB` : "—"],
+              ["Frame rate", isNum(info.fps) ? `${fmtNum(info.fps, 2)} fps` : "—"],
+              ["Analyzed on", fmtDate(result.timestamp)],
+              ["Model", result.model_version || "—"],
+              ["Result ID", <span className="font-mono text-xs">{result.id || "—"}</span>],
+            ]}
+          />
+        </Card>
+      </div>
+
+      <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+        <Button to="/" size="lg">
+          <RotateCcw className="h-4 w-4" aria-hidden="true" />
+          Analyze another video
+        </Button>
+        <Button
+          variant="secondary"
+          size="lg"
+          onClick={() => openReport(result, { confidence, realProb, fakeProb, threshold: threshold ?? 45 })}
+        >
+          <FileText className="h-4 w-4" aria-hidden="true" />
+          Open full report
+        </Button>
+        {currentUser && (
+          <Button to="/history" variant="ghost" size="lg">
+            <History className="h-4 w-4" aria-hidden="true" />
+            View history
+          </Button>
+        )}
+      </div>
+
+      <Alert variant="info" className="mt-10">
+        DeepScan gives a probability, not proof. The Xception + BiLSTM model looked at {info.frames_analyzed ?? "the sampled"}{" "}
+        frames from this video. Check important content against other sources before you act on it.
+      </Alert>
+    </AppLayout>
   );
 }

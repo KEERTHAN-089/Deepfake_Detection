@@ -1,458 +1,349 @@
-import React, { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import React, { useEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { Clock, Cpu, FileVideo, Film, Link2, ScanSearch, ShieldCheck, Upload, X } from "lucide-react";
+import { AppLayout } from "../components/Layout";
+import { Alert, Button, Card, Input, Spinner } from "../components/ui";
+import { cn } from "../lib/cn";
 import { useAuth } from "../contexts/AuthContext";
-import axios from "axios";
+import { analyzeFile, analyzeUrl, errorMessage } from "../lib/api";
+import { fmtBytes, fmtElapsed } from "../lib/format";
+
+// Must match allowed_extensions in python-backend/main.py
+const ALLOWED_EXT = [".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"];
+
+const STEPS = [
+  {
+    icon: Film,
+    title: "Sample frames",
+    body: "Up to 32 frames are taken at even intervals across the whole clip.",
+  },
+  {
+    icon: Cpu,
+    title: "Extract features",
+    body: "An Xception network turns each frame into a detailed visual fingerprint.",
+  },
+  {
+    icon: ScanSearch,
+    title: "Check consistency",
+    body: "A bidirectional LSTM compares frames over time and scores how likely the video is manipulated.",
+  },
+];
+
+function isValidUrl(value) {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function fileExtension(name) {
+  const i = name.lastIndexOf(".");
+  return i === -1 ? "" : name.slice(i).toLowerCase();
+}
 
 export default function Home() {
-  const { currentUser, logout } = useAuth();
+  const { currentUser } = useAuth();
   const navigate = useNavigate();
-  
-  const [uploadType, setUploadType] = useState("file"); // "file" or "url"
+
+  const [mode, setMode] = useState("file");
   const [file, setFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
   const [url, setUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [analysisProgress, setAnalysisProgress] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [status, setStatus] = useState("idle"); // idle | uploading | analyzing
+  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
+  const abortRef = useRef(null);
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-      navigate("/login");
-    } catch (err) {
-      console.error("Logout failed:", err);
+  const busy = status !== "idle";
+  const trimmedUrl = url.trim();
+  const canSubmit = !busy && (mode === "file" ? Boolean(file) : isValidUrl(trimmedUrl));
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(null);
+      return undefined;
     }
-  };
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file]);
 
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      setError("");
-      setResult(null);
+  useEffect(() => {
+    if (!busy) return undefined;
+    const start = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
+
+  // Abort an in-flight request if the user leaves the page.
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  function pickFile(candidate) {
+    if (!candidate) return;
+    const ext = fileExtension(candidate.name);
+    const supported = ext ? ALLOWED_EXT.includes(ext) : candidate.type.startsWith("video/");
+    if (!supported) {
+      setError(`That file type isn't supported. Use ${ALLOWED_EXT.join(", ")}.`);
+      return;
     }
-  };
-
-  const handleUrlChange = (e) => {
-    setUrl(e.target.value);
     setError("");
-    setResult(null);
-  };
+    setFile(candidate);
+  }
 
-  const handleSubmit = async (e) => {
+  function handleDrop(e) {
     e.preventDefault();
-    
-    if (uploadType === "file" && !file) {
-      setError("Please select a video file");
-      return;
-    }
-    
-    if (uploadType === "url" && !url) {
-      setError("Please enter a video URL");
-      return;
-    }
+    setDragging(false);
+    if (!busy) pickFile(e.dataTransfer.files?.[0]);
+  }
 
-    setLoading(true);
+  function switchMode(next) {
+    setMode(next);
     setError("");
-    setResult(null);
-    setDownloadProgress(0);
-    setAnalysisProgress("");
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (mode === "file" && !file) return setError("Choose a video file first.");
+    if (mode === "url" && !isValidUrl(trimmedUrl)) return setError("Enter a full link starting with http:// or https://.");
+
+    setError("");
+    setProgress(0);
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
-      let videoFile = file;
-
-      // If URL upload, download from node-downloader first
-      if (uploadType === "url") {
-        setAnalysisProgress("Downloading and analyzing video from URL...");
-        
-        const downloadResponse = await axios.post(
-          "http://localhost:3001/download",
-          { url },
-          {
-            timeout: 0, // UNLIMITED TIMEOUT for downloading
-            onDownloadProgress: (progressEvent) => {
-              const percentCompleted = Math.round(
-                (progressEvent.loaded * 100) / progressEvent.total
-              );
-              setDownloadProgress(percentCompleted);
-            },
-          }
-        );
-
-        if (!downloadResponse.data.success) {
-          throw new Error(downloadResponse.data.error || "Download failed");
-        }
-
-        console.log("✅ Download and analysis complete");
-        console.log("📊 Result:", downloadResponse.data.analysis);
-
-        // The node-downloader already analyzed it, so we have the result
-        const analysisResult = downloadResponse.data.analysis;
-        
-        setResult(analysisResult);
-        setAnalysisProgress("Analysis complete!");
-
-        // Navigate to result page with data
-        navigate("/result", { state: { result: analysisResult } });
-        
-        // Exit early since we're done
-        return;
+      let result;
+      if (mode === "file") {
+        setStatus("uploading");
+        result = await analyzeFile(file, {
+          signal: controller.signal,
+          onUploadProgress: (pct) => {
+            setProgress(pct);
+            if (pct >= 100) setStatus("analyzing");
+          },
+        });
+      } else {
+        setStatus("analyzing");
+        result = await analyzeUrl(trimmedUrl, { signal: controller.signal });
       }
 
-      // FILE UPLOAD: Send to Python backend for deepfake analysis
-      setAnalysisProgress("Analyzing video... This may take several minutes");
-      console.log("🚀 Sending to Python backend...");
-
-      const formData = new FormData();
-      formData.append("file", file, file.name);
-
-      const analysisResponse = await axios.post(
-        "http://localhost:8000/analyze",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-          timeout: 0, // ✅ UNLIMITED TIMEOUT - No time restriction
-          onUploadProgress: (progressEvent) => {
-            const percentCompleted = Math.round(
-              (progressEvent.loaded * 100) / progressEvent.total
-            );
-            setDownloadProgress(percentCompleted);
-          },
-        }
-      );
-
-      console.log("✅ Analysis complete:", analysisResponse.data);
-
-      setResult(analysisResponse.data);
-      setAnalysisProgress("Analysis complete!");
-
-      // Navigate to result page with data - REMOVE TIMEOUT
-      navigate("/result", { state: { result: analysisResponse.data } });
-
+      navigate(result.id ? `/result/${result.id}` : "/result", { state: { result } });
     } catch (err) {
-      console.error("❌ Error:", err);
-      setError(
-        err.response?.data?.detail || 
-        err.message || 
-        "An error occurred during processing"
-      );
-      setAnalysisProgress("");
+      const message = errorMessage(err, "The analysis failed. Please try again.");
+      if (message) setError(message);
     } finally {
-      setLoading(false);
+      abortRef.current = null;
+      setStatus("idle");
     }
-  };
+  }
 
   return (
-    <div style={{ 
-      padding: '20px', 
-      backgroundColor: '#1a1a2e', 
-      color: '#fff', 
-      minHeight: '100vh', 
-      fontFamily: 'Arial, sans-serif' 
-    }}>
-      
-      {/* Navbar */}
-      <div style={{ 
-        marginBottom: '30px', 
-        paddingBottom: '20px', 
-        borderBottom: '1px solid #9333ea' 
-      }}>
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center' 
-        }}>
-          <h1 style={{ 
-            margin: 0, 
-            color: '#a78bfa', 
-            fontSize: '24px', 
-            fontWeight: 'bold' 
-          }}>
-            DeepScan AI
-          </h1>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            {currentUser ? (
-              <>
-                <Link 
-                  to="/history" 
-                  style={{ 
-                    padding: '8px 16px', 
-                    backgroundColor: '#7c3aed', 
-                    color: '#fff', 
-                    textDecoration: 'none', 
-                    borderRadius: '4px', 
-                    fontWeight: 'bold' 
-                  }}
-                >
-                  History
-                </Link>
-                <span style={{ fontSize: '14px', color: '#d1d5db' }}>
-                  {currentUser.email}
-                </span>
-                <button
-                  onClick={handleLogout}
-                  style={{
-                    padding: '8px 16px',
-                    backgroundColor: '#dc2626',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontWeight: 'bold'
-                  }}
-                >
-                  Logout
-                </button>
-              </>
+    <AppLayout>
+      <section className="mx-auto max-w-2xl text-center">
+        <span className="inline-flex items-center gap-2 rounded-full border border-violet-500/20 bg-violet-500/10 px-3 py-1 text-xs font-medium text-violet-300">
+          <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+          Xception + BiLSTM video analysis
+        </span>
+        <h1 className="mt-6 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+          Is this video <span className="text-violet-400">real</span>?
+        </h1>
+        <p className="mt-4 text-base leading-relaxed text-zinc-400 sm:text-lg">
+          Upload a clip or paste a link. DeepScan samples frames across the video and checks them for
+          signs of face manipulation.
+        </p>
+      </section>
+
+      <Card className="mx-auto mt-10 max-w-2xl p-2 shadow-2xl shadow-black/40">
+        <div role="tablist" aria-label="Video source" className="grid grid-cols-2 gap-1 rounded-xl bg-zinc-950/70 p-1">
+          {[
+            { key: "file", label: "Upload file", icon: Upload },
+            { key: "url", label: "Paste link", icon: Link2 },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={mode === tab.key}
+              disabled={busy}
+              onClick={() => switchMode(tab.key)}
+              className={cn(
+                "flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-medium transition disabled:cursor-not-allowed",
+                mode === tab.key ? "bg-zinc-800 text-white shadow-sm" : "text-zinc-400 hover:text-zinc-200"
+              )}
+            >
+              <tab.icon className="h-4 w-4" aria-hidden="true" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-5 p-4 sm:p-6" noValidate>
+          {mode === "file" ? (
+            file ? (
+              <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/60">
+                {previewUrl && (
+                  <video
+                    src={previewUrl}
+                    className="aspect-video max-h-72 w-full bg-black object-contain"
+                    controls
+                    muted
+                    playsInline
+                    preload="metadata"
+                  />
+                )}
+                <div className="flex items-center gap-3 p-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-violet-300">
+                    <FileVideo className="h-4 w-4" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-zinc-100">{file.name}</p>
+                    <p className="text-xs text-zinc-500">{fmtBytes(file.size)}</p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setFile(null)}
+                    disabled={busy}
+                    aria-label="Remove file"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
             ) : (
-              <Link 
-                to="/login" 
-                style={{ 
-                  padding: '8px 16px', 
-                  backgroundColor: '#7c3aed', 
-                  color: '#fff', 
-                  textDecoration: 'none', 
-                  borderRadius: '4px', 
-                  fontWeight: 'bold' 
+              <label
+                htmlFor="video-file"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragging(true);
                 }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={handleDrop}
+                className={cn(
+                  "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-14 text-center transition",
+                  "focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-500/25",
+                  dragging
+                    ? "border-violet-400 bg-violet-500/10"
+                    : "border-zinc-700/80 hover:border-zinc-500 hover:bg-zinc-800/30"
+                )}
               >
-                Login
-              </Link>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Main Container */}
-      <div style={{ maxWidth: '800px', margin: '0 auto', paddingTop: '20px' }}>
-        
-        {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '40px' }}>
-          <h2 style={{ 
-            fontSize: '36px', 
-            fontWeight: 'bold', 
-            color: '#a78bfa', 
-            marginBottom: '10px' 
-          }}>
-            🎬 Deepfake Detection
-          </h2>
-          <p style={{ fontSize: '16px', color: '#d1d5db' }}>
-            Upload a video or provide a URL to analyze for deepfake content
-          </p>
-        </div>
-
-        {/* Upload Type Selector */}
-        <div style={{ 
-          display: 'flex', 
-          gap: '10px', 
-          marginBottom: '30px', 
-          justifyContent: 'center' 
-        }}>
-          <button
-            onClick={() => setUploadType("file")}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: uploadType === "file" ? '#7c3aed' : '#374151',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              fontSize: '14px'
-            }}
-          >
-            📁 Upload File
-          </button>
-          <button
-            onClick={() => setUploadType("url")}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: uploadType === "url" ? '#7c3aed' : '#374151',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              fontSize: '14px'
-            }}
-          >
-            🔗 From URL
-          </button>
-        </div>
-
-        {/* Upload Form */}
-        <div style={{ 
-          backgroundColor: '#16213e', 
-          padding: '30px', 
-          borderRadius: '12px', 
-          border: '1px solid #9333ea' 
-        }}>
-          <form onSubmit={handleSubmit}>
-            
-            {/* File Upload */}
-            {uploadType === "file" && (
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ 
-                  display: 'block', 
-                  marginBottom: '10px', 
-                  fontSize: '14px', 
-                  fontWeight: 'bold', 
-                  color: '#d1d5db' 
-                }}>
-                  Select Video File
-                </label>
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-zinc-800 ring-1 ring-zinc-700">
+                  <Upload className="h-5 w-5 text-zinc-300" aria-hidden="true" />
+                </div>
+                <p className="mt-4 text-sm font-medium text-zinc-200">
+                  Drop a video here, or <span className="text-violet-400">browse</span>
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">MP4, MOV, AVI, MKV, WEBM, FLV or WMV</p>
                 <input
+                  id="video-file"
                   type="file"
-                  accept="video/*"
-                  onChange={handleFileChange}
-                  style={{
-                    width: '100%',
-                    padding: '12px',
-                    backgroundColor: '#0f172a',
-                    border: '1px solid #4c1d95',
-                    borderRadius: '8px',
-                    color: '#fff',
-                    cursor: 'pointer'
+                  accept={`${ALLOWED_EXT.join(",")},video/*`}
+                  className="sr-only"
+                  onChange={(e) => {
+                    pickFile(e.target.files?.[0]);
+                    e.target.value = "";
                   }}
                 />
-                {file && (
-                  <p style={{ 
-                    marginTop: '10px', 
-                    fontSize: '12px', 
-                    color: '#34d399' 
-                  }}>
-                    ✅ Selected: {file.name} ({(file.size / (1024 * 1024)).toFixed(2)} MB)
+              </label>
+            )
+          ) : (
+            <Input
+              id="video-url"
+              label="Video link"
+              type="url"
+              inputMode="url"
+              icon={Link2}
+              placeholder="https://www.youtube.com/watch?v=…"
+              value={url}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                setError("");
+              }}
+              disabled={busy}
+              autoComplete="off"
+              hint="Works with YouTube, Instagram and direct video links. Public videos work best."
+            />
+          )}
+
+          {error && <Alert>{error}</Alert>}
+
+          {busy ? (
+            <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4" aria-live="polite">
+              <div className="flex items-center gap-3">
+                <Spinner />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-zinc-100">
+                    {status === "uploading"
+                      ? `Uploading… ${progress}%`
+                      : mode === "url"
+                        ? "Downloading and analyzing the video"
+                        : "Analyzing frames"}
                   </p>
+                  <p className="text-xs text-zinc-400">This can take a few minutes on CPU. Keep this tab open.</p>
+                </div>
+                <span className="flex items-center gap-1.5 font-mono text-xs tabular-nums text-zinc-400">
+                  <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                  {fmtElapsed(elapsed)}
+                </span>
+              </div>
+              <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+                {status === "uploading" ? (
+                  <div
+                    className="h-full rounded-full bg-violet-500 transition-[width] duration-300"
+                    style={{ width: `${progress}%` }}
+                  />
+                ) : (
+                  <div className="h-full w-1/3 animate-indeterminate rounded-full bg-violet-500" />
                 )}
               </div>
-            )}
-
-            {/* URL Input */}
-            {uploadType === "url" && (
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ 
-                  display: 'block', 
-                  marginBottom: '10px', 
-                  fontSize: '14px', 
-                  fontWeight: 'bold', 
-                  color: '#d1d5db' 
-                }}>
-                  Video URL
-                </label>
-                <input
-                  type="text"
-                  value={url}
-                  onChange={handleUrlChange}
-                  placeholder="https://example.com/video.mp4"
-                  style={{
-                    width: '100%',
-                    padding: '12px',
-                    backgroundColor: '#0f172a',
-                    border: '1px solid #4c1d95',
-                    borderRadius: '8px',
-                    color: '#fff',
-                    fontSize: '14px'
-                  }}
-                />
+              <div className="mt-3 flex justify-end">
+                <Button variant="ghost" size="sm" onClick={() => abortRef.current?.abort()}>
+                  Cancel
+                </Button>
               </div>
-            )}
+            </div>
+          ) : (
+            <Button type="submit" size="lg" className="w-full" disabled={!canSubmit}>
+              <ScanSearch className="h-5 w-5" aria-hidden="true" />
+              Analyze video
+            </Button>
+          )}
+        </form>
+      </Card>
 
-            {/* Progress Bar */}
-            {loading && downloadProgress > 0 && downloadProgress < 100 && (
-              <div style={{ marginBottom: '20px' }}>
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  marginBottom: '5px' 
-                }}>
-                  <span style={{ fontSize: '12px', color: '#d1d5db' }}>
-                    {uploadType === "url" ? "Downloading..." : "Uploading..."}
-                  </span>
-                  <span style={{ fontSize: '12px', color: '#d1d5db' }}>
-                    {downloadProgress}%
-                  </span>
-                </div>
-                <div style={{ 
-                  width: '100%', 
-                  backgroundColor: '#374151', 
-                  borderRadius: '8px', 
-                  height: '8px' 
-                }}>
-                  <div
-                    style={{
-                      width: `${downloadProgress}%`,
-                      backgroundColor: '#7c3aed',
-                      height: '8px',
-                      borderRadius: '8px',
-                      transition: 'width 0.3s'
-                    }}
-                  ></div>
-                </div>
+      {!currentUser && (
+        <p className="mt-5 text-center text-sm text-zinc-500">
+          <Link to="/login" className="font-medium text-violet-400 hover:text-violet-300">
+            Sign in
+          </Link>{" "}
+          to keep a history of your analyses.
+        </p>
+      )}
+
+      <section className="mt-24" aria-labelledby="how-it-works">
+        <h2 id="how-it-works" className="text-center text-sm font-semibold uppercase tracking-wider text-zinc-500">
+          How it works
+        </h2>
+        <div className="mt-8 grid gap-4 md:grid-cols-3">
+          {STEPS.map((step, i) => (
+            <Card key={step.title} className="p-6">
+              <div className="flex items-center gap-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10 text-violet-300 ring-1 ring-violet-500/20">
+                  <step.icon className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span className="font-mono text-xs text-zinc-500">0{i + 1}</span>
               </div>
-            )}
-
-            {/* Analysis Progress */}
-            {analysisProgress && (
-              <div style={{
-                marginBottom: '20px',
-                padding: '15px',
-                backgroundColor: '#1e3a8a',
-                border: '1px solid #3b82f6',
-                borderRadius: '8px',
-                textAlign: 'center'
-              }}>
-                <p style={{ color: '#93c5fd', fontSize: '14px', margin: 0 }}>
-                  ⏳ {analysisProgress}
-                </p>
-              </div>
-            )}
-
-            {/* Error Message */}
-            {error && (
-              <div style={{
-                marginBottom: '20px',
-                padding: '15px',
-                backgroundColor: '#7f1d1d',
-                border: '1px solid #dc2626',
-                borderRadius: '8px'
-              }}>
-                <p style={{ color: '#fecaca', fontSize: '14px', margin: 0 }}>
-                  ❌ {error}
-                </p>
-              </div>
-            )}
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={loading || (uploadType === "file" && !file) || (uploadType === "url" && !url)}
-              style={{
-                width: '100%',
-                padding: '16px',
-                backgroundColor: loading ? '#6b7280' : '#7c3aed',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '8px',
-                fontSize: '16px',
-                fontWeight: 'bold',
-                cursor: loading ? 'not-allowed' : 'pointer',
-                opacity: loading ? 0.6 : 1
-              }}
-            >
-              {loading ? (
-                <span>🔄 Processing... (This may take a few minutes)</span>
-              ) : (
-                <span>🚀 Analyze Video</span>
-              )}
-            </button>
-          </form>
+              <h3 className="mt-4 font-medium text-white">{step.title}</h3>
+              <p className="mt-1.5 text-sm leading-relaxed text-zinc-400">{step.body}</p>
+            </Card>
+          ))}
         </div>
-
-        {/* Quick Result Preview - REMOVED to prevent confusion */}
-      </div>
-    </div>
+      </section>
+    </AppLayout>
   );
 }
