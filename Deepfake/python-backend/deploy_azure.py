@@ -26,7 +26,7 @@ RESOURCE_GROUP = "deepscan-rg"
 ENVIRONMENT = "deepscan-env"
 APP = "deepscan-api"
 IMAGE = sys.argv[1] if len(sys.argv) > 1 else "ghcr.io/keerthan-089/deepscan-api:latest"
-FIREBASE_PROJECT = "deepfake-auth-e79a8-b4ffa"
+FIREBASE_PROJECT = "deepscan-keerthan"
 BASE_DIR = Path(__file__).parent
 ALLOWED_ORIGINS = ",".join(
     [

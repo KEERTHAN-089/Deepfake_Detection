@@ -1,15 +1,14 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
-// Your new Firebase configuration
+// Web config for the "deepscan-keerthan" Firebase project. These values are public by design.
 const firebaseConfig = {
-  apiKey: "AIzaSyD9_NcjbJweTYi14YHdiye3gE7Wk1xFPtk",
-  authDomain: "deepfake-auth-e79a8-b4ffa.firebaseapp.com",
-  projectId: "deepfake-auth-e79a8-b4ffa",
-  storageBucket: "deepfake-auth-e79a8-b4ffa.firebasestorage.app",
-  messagingSenderId: "350920339876",
-  appId: "1:350920339876:web:848f77d4d92f5b63ba5131",
-  measurementId: "G-P5LTT34SCK"
+  apiKey: "AIzaSyAFNfKttrQe6yz_cGZiGzjfRjof88FbE_w",
+  authDomain: "deepscan-keerthan.firebaseapp.com",
+  projectId: "deepscan-keerthan",
+  storageBucket: "deepscan-keerthan.firebasestorage.app",
+  messagingSenderId: "221801267069",
+  appId: "1:221801267069:web:737104591fdb7b0fe41614",
 };
 
 // Validate required config
