@@ -78,3 +78,6 @@ build/
 # Test results
 test_results.json
 all_videos.txt
+
+# Firebase CLI cache
+.firebase/
