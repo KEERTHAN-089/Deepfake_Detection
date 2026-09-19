@@ -1,0 +1,44 @@
+{
+    "config": {
+        "VIDEOS_DIR": "/workspace/data_videos",
+        "OUTPUT_DIR": "xception_lstm_20260129_074841",
+        "MAX_FRAMES": 32,
+        "IMG_SIZE": 299,
+        "BATCH_SIZE": 4,
+        "NUM_WORKERS": 2,
+        "EPOCHS": 20,
+        "LEARNING_RATE": 0.0001,
+        "WEIGHT_DECAY": 0.0001,
+        "LSTM_HIDDEN": 512,
+        "LSTM_LAYERS": 2,
+        "DROPOUT": 0.5,
+        "PATIENCE": 7,
+        "THRESHOLD": 0.45,
+        "FOCAL_ALPHA": [
+            3.0,
+            1.0
+        ],
+        "FOCAL_GAMMA": 2.5,
+        "TEST_SIZE": 0.2,
+        "RANDOM_STATE": 42
+    },
+    "final_metrics": {
+        "roc_auc": 0.7857667549217261,
+        "accuracy": 0.8473895582329317,
+        "f1": 0.8579728373110768,
+        "balanced_f1": 0.7129304004400576,
+        "real_recall": 0.5976095617529881,
+        "fake_recall": 0.8834003446295232
+    },
+    "confusion_matrix": [
+        [
+            150,
+            101
+        ],
+        [
+            203,
+            1538
+        ]
+    ],
+    "training_time": "2026-02-02 11:01:57"
+}

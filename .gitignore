@@ -33,6 +33,8 @@ firebase_service_account.json
 
 # Model files (too large for GitHub)
 *.pth
+# ...except the deployed model, stored with Git LFS
+!Deepfake/xception_lstm_20260129_074841/best_model.pth
 *.pkl
 *.h5
 *.onnx
@@ -48,7 +50,9 @@ balanced_model_*/
 improved_model_*/
 new_model_*/
 model_output_*/
-xception_lstm_*/
+**/xception_lstm_*/*
+!Deepfake/xception_lstm_20260129_074841/best_model.pth
+!Deepfake/xception_lstm_20260129_074841/results.json
 
 # Temporary files
 temp/

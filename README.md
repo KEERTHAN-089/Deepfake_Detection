@@ -11,9 +11,9 @@ GitHub repository: `https://github.com/KEERTHAN-089/Deepfake_Detection`
 ## Repository layout
 
 - `Deepfake/deepfake-frontend`: React app, deployed to Firebase Hosting.
-- `Deepfake/python-backend`: FastAPI API, deployed to Google Cloud Run.
+- `Deepfake/python-backend`: FastAPI API, deployed to Azure Container Apps.
 - `Deepfake/node-downloader`: **deprecated.** Link downloads now happen in the Python backend. Kept only for the local Videos page.
-- `Deepfake/xception_lstm_*`: trained model. Gitignored, because `best_model.pth` is 152 MB.
+- `Deepfake/xception_lstm_20260129_074841`: trained model. `best_model.pth` (152 MB) is stored with Git LFS.
 
 ## API (Python backend)
 
@@ -34,7 +34,7 @@ Signed-in callers send `Authorization: Bearer <Firebase ID token>`, and their re
 | `MODEL_DIR` | `../xception_lstm_20260129_074841` | Folder with `best_model.pth` and `results.json` |
 | `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed by CORS |
 | `MAX_UPLOAD_MB` | `200` | Largest accepted upload or download |
-| `FIREBASE_PROJECT_ID` | none | Firebase project when signing in with the server's own Google identity (Cloud Run) |
+| `FIREBASE_PROJECT_ID` | none | Firebase project, when using Google Application Default Credentials |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | none | Service-account key content, as an alternative to a key file |
 | `FIREBASE_SERVICE_ACCOUNT` | none | Path to the key file (local alternative) |
 | `YTDLP_NO_CHECK_CERT` | off | Skip TLS checks for downloads. Local use only, for antivirus HTTPS scanning |
@@ -60,15 +60,19 @@ YouTube links need a JavaScript runtime: [Deno](https://deno.com) or Node.js 20+
 
 ## Deploy
 
-**Backend: Google Cloud Run.** The Firebase project must be on the Blaze plan, and the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) must be installed.
+**Backend: Azure Container Apps.** Works with an Azure for Students subscription.
+
+1. Pushing backend changes (or the model) runs the *Backend image* GitHub Actions workflow. It builds the Docker image and publishes it to `ghcr.io/keerthan-089/deepscan-api`. The model is stored in the repo with Git LFS.
+2. Deploy the latest image with the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows):
 
 ```bash
 cd Deepfake/python-backend
-gcloud auth login              # once
-python deploy_cloud_run.py     # builds the image with the model, deploys, prints the API URL
+az login                       # once
+python deploy_azure.py         # creates or updates the Container App, prints the API URL
 ```
 
-The service scales to zero when idle, so the first request after a quiet period takes about 30 seconds.
+The app scales to zero when idle, so the first request after a quiet period takes about 30 seconds.
+The Firebase key from `firebase_service_account.json` is stored as an encrypted Container Apps secret.
 
 **Frontend: Firebase Hosting.** Put the API URL in `Deepfake/deepfake-frontend/.env.production` as `VITE_API_URL`, then:
 

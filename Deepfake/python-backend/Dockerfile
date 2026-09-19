@@ -1,4 +1,4 @@
-# Backend image for Google Cloud Run (CPU). deploy_cloud_run.py builds it with the model included.
+# Backend image (CPU). deploy_azure.py builds it in Azure with the model included.
 FROM python:3.11-slim
 
 RUN apt-get update \
@@ -26,5 +26,5 @@ ENV HOME=/home/user \
     PORT=8080
 
 EXPOSE 8080
-# Cloud Run sets PORT; default to 8080 elsewhere.
+# Listens on $PORT (8080 by default).
 CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT}"]

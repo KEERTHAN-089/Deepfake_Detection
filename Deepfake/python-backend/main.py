@@ -80,7 +80,7 @@ try:
     elif local_sa.exists():
         cred = credentials.Certificate(str(local_sa))
     else:
-        # On Cloud Run this is the service's own Google identity; no key file needed.
+        # Google Application Default Credentials (e.g. when running on Google Cloud).
         cred = credentials.ApplicationDefault()
 
     project_id = os.environ.get("FIREBASE_PROJECT_ID")
