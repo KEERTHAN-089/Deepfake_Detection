@@ -83,7 +83,7 @@ npx firebase-tools login       # once
 npx firebase-tools deploy --only hosting
 ```
 
-The site is served at `https://deepscan-keerthan.web.app`.
+The site is served at `https://deepfake-auth-e79a8-b4ffa.web.app`.
 
 ## Troubleshooting
 
