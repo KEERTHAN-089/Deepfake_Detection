@@ -80,9 +80,11 @@ try:
     elif local_sa.exists():
         cred = credentials.Certificate(str(local_sa))
     else:
+        # On Cloud Run this is the service's own Google identity; no key file needed.
         cred = credentials.ApplicationDefault()
 
-    firebase_admin.initialize_app(cred)
+    project_id = os.environ.get("FIREBASE_PROJECT_ID")
+    firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
     firestore_client = firebase_firestore.client()
     firebase_auth = _firebase_auth
     logger.info("✅ Firebase Admin initialized; Firestore client available")

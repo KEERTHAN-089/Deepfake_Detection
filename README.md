@@ -11,7 +11,7 @@ GitHub repository: `https://github.com/KEERTHAN-089/Deepfake_Detection`
 ## Repository layout
 
 - `Deepfake/deepfake-frontend`: React app, deployed to Firebase Hosting.
-- `Deepfake/python-backend`: FastAPI API, deployed to a Hugging Face Docker Space.
+- `Deepfake/python-backend`: FastAPI API, deployed to Google Cloud Run.
 - `Deepfake/node-downloader`: **deprecated.** Link downloads now happen in the Python backend. Kept only for the local Videos page.
 - `Deepfake/xception_lstm_*`: trained model. Gitignored, because `best_model.pth` is 152 MB.
 
@@ -34,7 +34,8 @@ Signed-in callers send `Authorization: Bearer <Firebase ID token>`, and their re
 | `MODEL_DIR` | `../xception_lstm_20260129_074841` | Folder with `best_model.pth` and `results.json` |
 | `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed by CORS |
 | `MAX_UPLOAD_MB` | `200` | Largest accepted upload or download |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | none | Service-account key content (used on the server) |
+| `FIREBASE_PROJECT_ID` | none | Firebase project when signing in with the server's own Google identity (Cloud Run) |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | none | Service-account key content, as an alternative to a key file |
 | `FIREBASE_SERVICE_ACCOUNT` | none | Path to the key file (local alternative) |
 | `YTDLP_NO_CHECK_CERT` | off | Skip TLS checks for downloads. Local use only, for antivirus HTTPS scanning |
 
@@ -59,13 +60,15 @@ YouTube links need a JavaScript runtime: [Deno](https://deno.com) or Node.js 20+
 
 ## Deploy
 
-**Backend: Hugging Face Space.**
+**Backend: Google Cloud Run.** The Firebase project must be on the Blaze plan, and the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) must be installed.
 
 ```bash
 cd Deepfake/python-backend
-huggingface-cli login          # needs a token with write access
-python deploy_space.py         # uploads code + model, sets secrets, prints the API URL
+gcloud auth login              # once
+python deploy_cloud_run.py     # builds the image with the model, deploys, prints the API URL
 ```
+
+The service scales to zero when idle, so the first request after a quiet period takes about 30 seconds.
 
 **Frontend: Firebase Hosting.** Put the API URL in `Deepfake/deepfake-frontend/.env.production` as `VITE_API_URL`, then:
 
