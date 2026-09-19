@@ -18,8 +18,8 @@ export const downloadVideo = async (videoUrl, outputDir) => {
   try {
     const outputTemplate = path.join(outputDir, '%(title)s.%(ext)s');
     
-    // Execute yt-dlp command
-    const command = `yt-dlp -f "best[ext=mp4]" -o "${outputTemplate}" "${videoUrl}"`;
+    // Execute yt-dlp command with browser cookies for YouTube extraction
+    const command = `yt-dlp --no-check-certificate --cookies-from-browser edge -f "best[ext=mp4]" -o "${outputTemplate}" "${videoUrl}"`;
     
     execSync(command, {
       encoding: 'utf-8',
